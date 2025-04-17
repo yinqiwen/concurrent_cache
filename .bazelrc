@@ -1,0 +1,6 @@
+build --copt=-g
+build --copt=-O2
+build -c dbg
+build --cxxopt=-std=c++17
+build --action_env=LIBRARY_PATH
+# common --enable_bzlmod
