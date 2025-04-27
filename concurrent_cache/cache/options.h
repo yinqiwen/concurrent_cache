@@ -15,14 +15,17 @@
  */
 
 #pragma once
+#include <cstddef>
+#include <cstdint>
+
+#include "concurrent_cache/common/time.h"
 
 namespace concurrent_cache {
-
-enum ErrCode {
-  kOK = 0,
-  kErrNotExist = 1000,
-  kErrExist,
-  kTooManyOverflowBuckets,
-  kErrTooManyRefs,
+struct CacheOptions {
+  size_t max_size = 1024 * 1024;
+  Timescale time_scale = Timescale::MILLISECOND;
+  size_t bucket_reserved_slots = 4;
+  int lfu_log_factor = 10;
+  int lfu_decay_time = 1;
 };
-}
+}  // namespace concurrent_cache

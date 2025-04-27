@@ -18,6 +18,7 @@
 #include <sys/time.h>
 #include <chrono>
 #include <cstdint>
+#include <utility>
 namespace concurrent_cache {
 
 static inline int64_t gettimeofday_us() {
@@ -30,32 +31,34 @@ static inline int64_t gettimeofday_us() {
 }
 static const auto g_app_start_time = gettimeofday_us();
 
-// static const auto g_app_start_time = std::chrono::system_clock::now();
-
 enum class Timescale {
   SECOND,
   MILLISECOND,
   MICROSECOND,
 };
+void enable_estimate_timestamp_updater();
+uint32_t get_timestamp(Timescale scale);
 
-inline uint32_t get_timestamp(Timescale scale) {
-  auto now = gettimeofday_us();
-  auto duration = now - g_app_start_time;
-  switch (scale) {
-    case Timescale::MILLISECOND: {
-      auto millis = duration / 1000;
-      return static_cast<uint32_t>(millis);
+template <typename T>
+struct ValueWithTTL {
+  T val;
+  uint64_t expire_at_ms;
+  const T& value() const { return val; }
+  uint64_t ttl() const { return pttl() / 1000; }
+  uint64_t pttl() const {
+    auto now_ms = get_timestamp(Timescale::MILLISECOND);
+    if (now_ms < expire_at_ms) {
+      return expire_at_ms - now_ms;
     }
-    case Timescale::MICROSECOND: {
-      auto micros = duration / 1000000;
-      return static_cast<uint32_t>(micros);
-    }
-    case Timescale::SECOND:
-    default: {
-      auto secs = duration / 1000000000;
-      return static_cast<uint32_t>(secs);
-    }
+    return 0;
   }
+};
+
+template <typename T, typename DURATION>
+ValueWithTTL<T> make_ttl_value(T&& v, DURATION ttl) {
+  auto expire_at_ms =
+      get_timestamp(Timescale::MILLISECOND) + std::chrono::duration_cast<std::chrono::milliseconds>(ttl).count();
+  return ValueWithTTL<T>{std::forward<T>(v), expire_at_ms};
 }
 
 }  // namespace concurrent_cache

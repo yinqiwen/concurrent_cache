@@ -3,51 +3,12 @@ package(
 )
 
 cc_library(
-    name = "allign",
+    name = "options",
     hdrs = [
-        "allign.h",
+        "options.h",
     ],
-)
-
-cc_library(
-    name = "errcode",
-    hdrs = [
-        "errcode.h",
-    ],
-)
-
-cc_library(
-    name = "ttl",
-    hdrs = [
-        "ttl.h",
-    ],
-)
-
-cc_library(
-    name = "time",
-    hdrs = [
-        "time.h",
-    ],
-)
-
-cc_library(
-    name = "stats",
-    hdrs = [
-        "stats.h",
-    ],
-)
-
-cc_library(
-    name = "cache_handle",
-    hdrs = [
-        "cache_handle.h",
-    ],
-)
-
-cc_library(
-    name = "overflow",
-    hdrs = [
-        "overflow.h",
+    deps = [
+        "//concurrent_cache/common:time",
     ],
 )
 
@@ -59,11 +20,7 @@ cc_library(
         "hashmap_impl.h",
     ],
     deps = [
-        "//concurrent_cache/cache/detail:cache_handle",
-        "//concurrent_cache/cache/detail:errcode",
         "//concurrent_cache/cache/detail:iterator",
-        "//concurrent_cache/cache/detail:stats",
-        "//concurrent_cache/cache/detail:ttl",
         "//concurrent_cache/common:allign",
         "//concurrent_cache/simd:simd_ops",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -71,19 +28,17 @@ cc_library(
 )
 
 cc_library(
-    name = "lru_cache",
+    name = "cache",
     # srcs = ["clock_cache_impl.cc"],
     hdrs = [
-        "lru_cache.h",
-        "lru_cache_impl.h",
+        "cache.h",
+        "cache_impl.h",
+        "ttl_cache.h",
     ],
     deps = [
-        "//concurrent_cache/cache/detail:cache_handle",
-        "//concurrent_cache/cache/detail:errcode",
+        ":options",
         "//concurrent_cache/cache/detail:hazptr",
         "//concurrent_cache/cache/detail:iterator",
-        "//concurrent_cache/cache/detail:stats",
-        "//concurrent_cache/cache/detail:ttl",
         "//concurrent_cache/common:allign",
         "//concurrent_cache/common:time",
         "//concurrent_cache/simd:simd_ops",
@@ -92,9 +47,9 @@ cc_library(
 )
 
 cc_test(
-    name = "lru_cache_test",
+    name = "cache_test",
     size = "small",
-    srcs = ["lru_cache_test.cc"],
+    srcs = ["cache_test.cc"],
     linkopts = [
         "-L/usr/local/lib64",
         "-lfmt",
@@ -109,7 +64,7 @@ cc_test(
     ],
     linkstatic = True,
     deps = [
-        ":lru_cache",
+        ":cache",
         "@com_google_googletest//:gtest_main",
     ],
 )

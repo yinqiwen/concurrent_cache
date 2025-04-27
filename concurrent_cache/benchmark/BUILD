@@ -7,8 +7,8 @@ cc_library(
         "key_generator.h",
     ],
     deps = [
+        "//concurrent_cache/cache",
         "//concurrent_cache/cache:hashmap",
-        "//concurrent_cache/cache:lru_cache",
     ],
 )
 

@@ -181,7 +181,7 @@ static inline std::pair<uint64_t, std::string> rand_key_value() {
 }
 
 static void init_cache() {
-  LRUCacheOptions opts;
+  CacheOptions opts;
   opts.max_size = FLAGS_cache_size;
   // g_test_cache = std::make_unique<LRU>();
   if (FLAGS_cache == "concurrent_lru") {
@@ -192,6 +192,8 @@ static void init_cache() {
     g_test_cache = std::make_unique<HashMap>();
   } else if (FLAGS_cache == "folly_concurrent_hashmap") {
     g_test_cache = std::make_unique<FollyHashMap>();
+  } else if (FLAGS_cache == "folly_atomic_hashmap") {
+    g_test_cache = std::make_unique<FollyAtomicHashMap>();
   }
 
   if (FLAGS_generator == "uniform") {
@@ -260,7 +262,7 @@ static void read_cache_log() {
   auto now_read = read_hit + read_miss;
   static int64_t last_read_count = 0;
 
-  fmt::print("get_hit:{},get_miss:{},hit_ratio:{},get_qps:{},mem_usage:{}KB\n", read_hit, read_miss,
+  fmt::print("get_hit:{},get_miss:{},hit_ratio:{},get_ops:{},mem_usage:{}KB\n", read_hit, read_miss,
              read_hit * 1.0 / (read_hit + read_miss),
              (now_read - last_read_count) * 1000000.0 / (gettimeofday_us() - g_last_log_ts), get_mem_usage());
   last_read_count = now_read;
@@ -283,8 +285,9 @@ static void write_cache_log() {
   auto now_write = write_success + write_fail;
   static int64_t last_write_count = 0;
 
-  fmt::print("set_success:{},set_fail:{},set_qps:{},mem_usage:{}KB \n", write_success, write_fail,
+  fmt::print("set_success:{},set_fail:{},set_ops:{},mem_usage:{}KB \n", write_success, write_fail,
              (now_write - last_write_count) * 1000000.0 / (gettimeofday_us() - g_last_log_ts), get_mem_usage());
+  fmt::print("Cache Status:{}\n", g_test_cache->GetStats());
   last_write_count = now_write;
 }
 
@@ -316,12 +319,10 @@ static void read_write_cache_log() {
   static int64_t last_write = 0;
 
   auto hit_ratio = (read_hit - last_read_hit) * 1.0 / (now_read - last_read_count);
+  auto getset_ops = (now_read - last_read_count) * 1000000.0 / (gettimeofday_us() - g_last_log_ts);
 
-  fmt::print("get_hit:{},get_miss:{},hit_ratio:{},set_succss:{},set_fail:{},getset_qps:{},mem_usage:{}KB \n", read_hit,
-             read_miss, hit_ratio, write_success, write_fail,
-             (now_read - last_read_count + last_write + write_fail - last_write) * 1000000.0 /
-                 (gettimeofday_us() - g_last_log_ts),
-             get_mem_usage());
+  fmt::print("get_hit:{},get_miss:{},hit_ratio:{},set_succss:{},set_fail:{},getset_ops:{},mem_usage:{}KB \n", read_hit,
+             read_miss, hit_ratio, write_success, write_fail, getset_ops, get_mem_usage());
   fmt::print("Cache Status:{}\n", g_test_cache->GetStats());
   last_read_count = now_read;
   last_read_miss = read_miss;
@@ -354,7 +355,7 @@ int main(int argc, char** argv) {
     return -1;
   }
   folly::SingletonVault::singleton()->registrationComplete();
-  folly::enable_hazptr_thread_pool_executor();
+  // folly::enable_hazptr_thread_pool_executor();
   concurrent_cache::benchmark::start_test();
   return 0;
 }

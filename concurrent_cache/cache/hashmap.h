@@ -82,6 +82,8 @@ class ConcurrentFixedHashMap {
   const_iterator end() const noexcept;
   const_iterator begin() const noexcept;
 
+  std::string stats() const;
+
  private:
   detail::ConcurrentFixedHashMapImpl<KeyType, ValueType, HashFn, KeyEqual, Allocator>* impl_ = nullptr;
 };

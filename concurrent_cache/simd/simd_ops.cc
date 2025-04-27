@@ -84,7 +84,7 @@ HWY_INLINE T reduce_min(const T* data, size_t len) {
   const hn::ScalableTag<T> d;
   constexpr auto lanes = hn::Lanes(d);
   size_t i = 0;
-  for (; (i + lanes) < len; i += lanes) {
+  for (; (i + lanes) <= len; i += lanes) {
     auto lv = hn::LoadU(d, data + i);
     auto min_v = hn::ReduceMin(d, lv);
     if (min_v < min_val) {
@@ -101,17 +101,18 @@ HWY_INLINE T reduce_min(const T* data, size_t len) {
   return min_val;
 }
 
-HWY_INLINE std::pair<uint32_t, uint16_t> simd_vector_min_impl(const uint32_t* data, size_t len) {
+template <typename T>
+HWY_INLINE std::pair<T, uint16_t> simd_vector_min_impl(const T* data, size_t len) {
   uint32_t min_val = reduce_min(data, len);
-  if (min_val == std::numeric_limits<uint32_t>::max()) {
+  if (min_val == std::numeric_limits<T>::max()) {
     return {0, 0};
   }
-  using D = hn::ScalableTag<uint32_t>;
+  using D = hn::ScalableTag<T>;
   const D d;
   constexpr auto lanes = hn::Lanes(d);
   const hn::Vec<D> cmp = hn::Set(d, min_val);
   size_t idx = 0;
-  for (; (idx + lanes) < len; idx += lanes) {
+  for (; (idx + lanes) <= len; idx += lanes) {
     const hn::Vec<D> v = hn::LoadU(d, data + idx);
     auto mask = hn::Eq(v, cmp);
     auto found = hn::FindFirstTrue(d, mask);
@@ -131,6 +132,33 @@ HWY_INLINE std::pair<uint32_t, uint16_t> simd_vector_min_impl(const uint32_t* da
   return {min_val, 0};
 }
 
+HWY_INLINE void simd_decr_lfu_counters_impl(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay,
+                                            const uint8_t* counters, uint8_t* result_counters) {
+  using D = hn::ScalableTag<uint32_t>;
+  const hn::Rebind<uint8_t, D> du8;
+  const D d;
+  constexpr auto lanes = hn::Lanes(d);
+  uint32_t max_ts = std::numeric_limits<uint32_t>::max();
+  const hn::Vec<D> max_ts_val = hn::Set(d, max_ts);
+  const hn::Vec<D> now_val = hn::Set(d, now);
+  const hn::Vec<D> decay_val = hn::Set(d, decay);
+  auto zero_u8 = hn::Zero(du8);
+  auto max_counter_v = hn::Set(du8, std::numeric_limits<int8_t>::max());
+  size_t idx = 0;
+  for (; (idx + lanes) <= len; idx += lanes) {
+    auto ts_v = hn::LoadU(d, ts + idx);
+    auto counter_v = hn::LoadU(du8, counters + idx);
+    auto filter = hn::Lt(ts_v, max_ts_val);
+    auto elased = hn::Sub(now_val, ts_v);
+    auto period = hn::Div(elased, decay_val);
+    auto period_u8 = hn::U8FromU32(period);
+    auto mask = hn::Gt(period_u8, counter_v);
+    auto final_v = hn::IfThenZeroElse(mask, hn::Sub(counter_v, period_u8));
+    final_v = hn::IfThenElse(hn::DemoteMaskTo(du8, d, filter), max_counter_v, final_v);
+    hn::StoreU(final_v, du8, result_counters + idx);
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace simd
 }  // namespace concurrent_cache
@@ -148,8 +176,18 @@ uint64_t simd_vector_match(const uint8_t* data, size_t len, uint8_t v) {
 }
 
 std::pair<uint32_t, uint16_t> simd_vector_min(const uint32_t* data, size_t len) {
-  HWY_EXPORT_T(Table, simd_vector_min_impl);
+  HWY_EXPORT_T(Table, simd_vector_min_impl<uint32_t>);
   return HWY_DYNAMIC_DISPATCH_T(Table)(data, len);
+}
+std::pair<uint8_t, uint16_t> simd_vector_min(const uint8_t* data, size_t len) {
+  HWY_EXPORT_T(Table, simd_vector_min_impl<uint8_t>);
+  return HWY_DYNAMIC_DISPATCH_T(Table)(data, len);
+}
+
+void simd_decr_lfu_counters(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay, const uint8_t* counters,
+                            uint8_t* result_counters) {
+  HWY_EXPORT_T(Table, simd_decr_lfu_counters_impl);
+  return HWY_DYNAMIC_DISPATCH_T(Table)(ts, len, now, decay, counters, result_counters);
 }
 
 }  // namespace simd

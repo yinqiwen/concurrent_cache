@@ -22,8 +22,9 @@
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "concurrent_cache/cache/cache.h"
 #include "concurrent_cache/cache/hashmap.h"
-#include "concurrent_cache/cache/lru_cache.h"
+#include "folly/AtomicHashMap.h"
 #include "folly/concurrency/ConcurrentHashMap.h"
 #include "folly/container/EvictingCacheMap.h"
 
@@ -50,7 +51,7 @@ class HashMap : public TestCache {
     auto found = cache_->find(key);
     return found != cache_->end();
   }
-  std::string GetStats() { return ""; }
+  std::string GetStats() { return cache_->stats(); }
 
   std::unique_ptr<Cache> cache_;
 };
@@ -63,6 +64,22 @@ class FollyHashMap : public TestCache {
     return 0;
   }
   bool Put(uint64_t key, std::string&& val) { return cache_->insert_or_assign(key, std::move(val)).second; }
+  bool Get(uint64_t key, std::function<void(const std::string&)>&& value_cb) {
+    auto found = cache_->find(key);
+    return found != cache_->end();
+  }
+  std::string GetStats() { return ""; }
+  std::unique_ptr<Cache> cache_;
+};
+
+class FollyAtomicHashMap : public TestCache {
+ private:
+  using Cache = folly::AtomicHashMap<uint64_t, std::string, absl::container_internal::hash_default_hash<uint64_t>>;
+  int Init(size_t cache_size) {
+    cache_ = std::make_unique<Cache>(cache_size);
+    return 0;
+  }
+  bool Put(uint64_t key, std::string&& val) { return cache_->emplace(key, std::move(val)).second; }
   bool Get(uint64_t key, std::function<void(const std::string&)>&& value_cb) {
     auto found = cache_->find(key);
     return found != cache_->end();
@@ -96,7 +113,7 @@ class FollyLRU : public TestCache {
 class LRU : public TestCache {
  private:
   int Init(size_t cache_size) {
-    concurrent_cache::LRUCacheOptions opts;
+    concurrent_cache::CacheOptions opts;
     opts.max_size = cache_size;
     cache_ = std::make_unique<concurrent_cache::LRUCache<uint64_t, std::string>>(opts);
     return 0;
@@ -109,6 +126,42 @@ class LRU : public TestCache {
   std::string GetStats() { return cache_->stats(); }
 
   std::unique_ptr<concurrent_cache::LRUCache<uint64_t, std::string>> cache_;
+};
+
+class LFU : public TestCache {
+ private:
+  int Init(size_t cache_size) {
+    concurrent_cache::CacheOptions opts;
+    opts.max_size = cache_size;
+    cache_ = std::make_unique<concurrent_cache::LFUCache<uint64_t, std::string>>(opts);
+    return 0;
+  }
+  bool Put(uint64_t key, std::string&& val) { return cache_->insert_or_assign(key, std::move(val)); }
+  bool Get(uint64_t key, std::function<void(const std::string&)>&& value_cb) {
+    auto found = cache_->find(key);
+    return found != cache_->end();
+  }
+  std::string GetStats() { return cache_->stats(); }
+
+  std::unique_ptr<concurrent_cache::LFUCache<uint64_t, std::string>> cache_;
+};
+
+class FIFO : public TestCache {
+ private:
+  int Init(size_t cache_size) {
+    concurrent_cache::CacheOptions opts;
+    opts.max_size = cache_size;
+    cache_ = std::make_unique<concurrent_cache::FIFOCache<uint64_t, std::string>>(opts);
+    return 0;
+  }
+  bool Put(uint64_t key, std::string&& val) { return cache_->insert_or_assign(key, std::move(val)); }
+  bool Get(uint64_t key, std::function<void(const std::string&)>&& value_cb) {
+    auto found = cache_->find(key);
+    return found != cache_->end();
+  }
+  std::string GetStats() { return cache_->stats(); }
+
+  std::unique_ptr<concurrent_cache::FIFOCache<uint64_t, std::string>> cache_;
 };
 
 }  // namespace benchmark

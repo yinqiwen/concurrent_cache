@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "lru_cache.h"
 #include <gtest/gtest.h>
 #include <array>
 #include <chrono>
 #include <random>
 #include <thread>
+#include "concurrent_cache/cache/ttl_cache.h"
 
 #include "folly/synchronization/PicoSpinLock.h"
 
@@ -54,4 +54,29 @@ TEST(HashMap, assign_erase_if) {
   ASSERT_TRUE(cache.assign_if_equal(10, 11, 12).has_value());
   ASSERT_EQ(cache.erase_if_equal(10, 11), 0);
   ASSERT_EQ(cache.erase_if_equal(10, 12), 1);
+
+  // std::chrono::seconds x = std::chrono::system_clock::now() - std::chrono::system_clock::now();
+
+  // std::chrono::milliseconds x(3000);
+  // std::chrono::seconds y(1);
+
+  // printf("####%d  %d\n", x.count(), std::chrono::duration_cast<std::chrono::milliseconds>(y).count());
+}
+TEST(TTLCache, simple) {
+  concurrent_cache::LRUTTLCache<int64_t, int64_t> cache;
+
+  for (int64_t i = 0; i < 100; i++) {
+    auto res = cache.insert(i, i + 1, std::chrono::seconds(1));
+    ASSERT_TRUE(res.second);
+  }
+  for (int64_t i = 0; i < 100; i++) {
+    auto found = cache.find(i);
+    ASSERT_EQ(found->second.value(), i + 1);
+    ASSERT_GT(found->second.pttl(), 0);
+  }
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  for (int64_t i = 0; i < 100; i++) {
+    auto found = cache.find(i);
+    ASSERT_EQ(found, cache.end());
+  }
 }

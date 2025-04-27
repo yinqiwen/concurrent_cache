@@ -29,7 +29,6 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <folly/lang/SafeAssert.h>
 #include <folly/synchronization/Hazptr.h>
-#include "detail/node.h"
 #include "folly/ThreadCachedInt.h"
 #include "folly/synchronization/DistributedMutex.h"
 
@@ -43,8 +42,9 @@
 
 namespace concurrent_cache {
 namespace detail {
-template <class KeyType, class ValueType, typename HashFn, typename KeyEqual, typename Allocator>
-class LRUCacheImpl {
+template <typename KeyType, typename ValueType, typename HashFn, typename KeyEqual, typename Allocator,
+          template <typename, typename, typename> class CacheBucket>
+class CacheImpl {
  public:
   typedef KeyType key_type;
   typedef ValueType mapped_type;
@@ -53,13 +53,14 @@ class LRUCacheImpl {
   typedef HashFn hasher;
   typedef KeyEqual key_equal;
   using allocator_type = Allocator;
-  using bucket_type = LRUBucket<KeyType, ValueType, Allocator>;
-  using Self = LRUCacheImpl<KeyType, ValueType, HashFn, KeyEqual, Allocator>;
+  // using bucket_type = LRUBucket<KeyType, ValueType, Allocator>;
+  using bucket_type = CacheBucket<KeyType, ValueType, Allocator>;
+  using Self = CacheImpl<KeyType, ValueType, HashFn, KeyEqual, Allocator, CacheBucket>;
   using iterator = Iterator<Self>;
   using const_iterator = Iterator<Self>;
 
-  explicit LRUCacheImpl(const LRUCacheOptions& options);
-  ~LRUCacheImpl();
+  explicit CacheImpl(const CacheOptions& options);
+  ~CacheImpl();
 
   size_t bucket_count() const;
   const_iterator cend() const noexcept;
@@ -68,6 +69,10 @@ class LRUCacheImpl {
   const_iterator begin() const noexcept;
 
   const_iterator find(const KeyType& k) const;
+
+  template <typename Filter>
+  const_iterator filter_find(const KeyType& k, Filter&& filter);
+
   template <typename... Args>
   std::pair<const_iterator, bool> emplace(Args&&... args);
   template <typename... Args>
@@ -139,6 +144,8 @@ class LRUCacheImpl {
   std::pair<uint32_t, uint8_t> get_idx_and_tag(const key_type& key) const;
 
   bool find_slot(iterator& iter, const key_type& key, uint8_t tag) const;
+  template <typename Filter>
+  bool filter_find_slot(iterator& iter, const key_type& key, uint8_t tag, Filter&& filter);
 
   bool acquire_empty_slot(iterator& iter, uint8_t tag, node_type* node);
   template <typename MatchFunc>
@@ -146,22 +153,15 @@ class LRUCacheImpl {
   template <typename MatchFunc>
   bool do_insert(uint32_t bucket_idx, iterator& iter, InsertType type, uint8_t tag, node_type* node, MatchFunc match);
 
-  std::tuple<bucket_type*, uint32_t, node_type*, uint8_t> find_oldest_slot(size_t bucket_idx) const;
-
   std::unique_lock<bucket_mutex_t> lock_bucket(size_t bucket_idx) {
     return std::unique_lock<bucket_mutex_t>(bucket_metas_[bucket_idx].lock);
   }
   folly::hazptr_obj_cohort<std::atomic>* cohort() {
     static thread_local folly::hazptr_obj_cohort<std::atomic> tls_cohort;
     return &tls_cohort;
-    // static __thread uint32_t cursor = 0;
-    // uint32_t pool_id = cursor % cohorts_.size();
-    // cursor++;
-    // return &cohorts_[pool_id];
   }
 
-  LRUCacheOptions opts_;
-
+  CacheOptions opts_;
   // folly::hazptr_obj_cohort<std::atomic> cohort_;
   // std::array<folly::hazptr_obj_cohort<std::atomic>, 8> cohorts_;
 
@@ -176,14 +176,17 @@ class LRUCacheImpl {
   folly::ThreadCachedInt<int64_t> overflow_bucket_size_{0};
 };
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-LRUCacheImpl<K, V, Hash, Eq, Alloc>::LRUCacheImpl(const LRUCacheOptions& options) : opts_(options) {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::CacheImpl(const CacheOptions& options) : opts_(options) {
   size_t init_size = opts_.max_size;
   if (init_size == 0) {
     init_size = kDefaultMaxSize;
   }
 
   size_t actual_max_size = static_cast<size_t>(init_size);
+  actual_max_size =
+      static_cast<size_t>(actual_max_size * kBucketSlotSize / (kBucketSlotSize - opts_.bucket_reserved_slots) * 1.0);
   // size_t actual_max_size = static_cast<size_t>(options_.max_size);
   actual_max_size = align_to<size_t>(actual_max_size, kBucketSlotSize);
   bucket_count_ = actual_max_size / kBucketSlotSize;
@@ -209,9 +212,11 @@ LRUCacheImpl<K, V, Hash, Eq, Alloc>::LRUCacheImpl(const LRUCacheOptions& options
   // for (size_t i = 0; i < 8; i++) {
   //   cohorts_.emplace_back(folly::hazptr_obj_cohort<std::atomic>{});
   // }
+  enable_estimate_timestamp_updater();
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
-LRUCacheImpl<K, V, Hash, Eq, Alloc>::~LRUCacheImpl() {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::~CacheImpl() {
   for (size_t i = 0; i < bucket_count_; i++) {
     buckets_[i].~bucket_type();
     bucket_metas_[i].~BucketMeta();
@@ -219,8 +224,9 @@ LRUCacheImpl<K, V, Hash, Eq, Alloc>::~LRUCacheImpl() {
   Alloc().deallocate((uint8_t*)buckets_, sizeof(bucket_type) * bucket_count_);
   Alloc().deallocate((uint8_t*)bucket_metas_, sizeof(BucketMeta) * bucket_count_);
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
-std::string LRUCacheImpl<K, V, Hash, Eq, Alloc>::stats() const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+std::string CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::stats() const {
   std::string info;
   info.append("node_counter:").append(std::to_string(get_alive_node_counter())).append(",");
   info.append("evict_retry:").append(std::to_string(evict_retry_counter_.readFull())).append(",");
@@ -229,8 +235,9 @@ std::string LRUCacheImpl<K, V, Hash, Eq, Alloc>::stats() const {
   return info;
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-std::pair<uint32_t, uint8_t> LRUCacheImpl<K, V, Hash, Eq, Alloc>::get_idx_and_tag(const key_type& key) const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+std::pair<uint32_t, uint8_t> CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::get_idx_and_tag(const key_type& key) const {
   auto hash = hasher()(key);
   hash ^= hash >> 32;
   hash *= 0x9E3779B97F4A7C15ULL;
@@ -242,8 +249,10 @@ std::pair<uint32_t, uint8_t> LRUCacheImpl<K, V, Hash, Eq, Alloc>::get_idx_and_ta
   uint32_t bucket_index = static_cast<uint32_t>((hash >> bucket_type::kTagMaskBits) % bucket_count_);
   return {bucket_index, tag};
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
-bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::acquire_empty_slot(iterator& iter, uint8_t tag, node_type* new_node) {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::acquire_empty_slot(iterator& iter, uint8_t tag,
+                                                                       node_type* new_node) {
   auto* bucket = iter.get_bucket();
   auto& hazcurr = iter.hazptr_;
   uint64_t mask =
@@ -265,7 +274,8 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::acquire_empty_slot(iterator& iter, uin
     if (!bucket->set_tag(offset, bucket_type::kBusyCtrl, tag)) {
       FOLLY_SAFE_FATAL("failed to set new tag for empty slot");
     }
-    bucket->set_access_timestamp(offset, get_timestamp(opts_.time_scale));
+    // bucket->update_counters(offset, get_timestamp(opts_.time_scale));
+    bucket->touch_create(offset, opts_);
     inc_size(iter.get_bucket_idx());
     hazcurr.reset_protection(new_node);
     return true;
@@ -277,10 +287,11 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::acquire_empty_slot(iterator& iter, uin
     return false;
   }
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename MatchFunc>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::erase_slot(iterator& iter, const key_type& key, uint8_t tag,
-                                                       MatchFunc match) {
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_slot(iterator& iter, const key_type& key, uint8_t tag,
+                                                                 MatchFunc match) {
   auto* bucket = iter.get_bucket();
   auto& hazcurr = iter.hazptr_;
   uint64_t mask = simd::simd_vector_match(reinterpret_cast<const uint8_t*>(bucket->tags), kBucketSlotSize, tag);
@@ -315,8 +326,9 @@ size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::erase_slot(iterator& iter, const key
   }
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::find_slot(iterator& iter, const K& key, uint8_t tag) const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find_slot(iterator& iter, const K& key, uint8_t tag) const {
   auto* bucket = iter.get_bucket();
   auto& hazcurr = iter.hazptr_;
   uint64_t mask = simd::simd_vector_match(reinterpret_cast<const uint8_t*>(bucket->tags), kBucketSlotSize, tag);
@@ -342,10 +354,48 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::find_slot(iterator& iter, const K& key
     return false;
   }
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+template <typename Filter>
+bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find_slot(iterator& iter, const key_type& key, uint8_t tag,
+                                                                     Filter&& filter) {
+  auto* bucket = iter.get_bucket();
+  auto& hazcurr = iter.hazptr_;
+  uint64_t mask = simd::simd_vector_match(reinterpret_cast<const uint8_t*>(bucket->tags), kBucketSlotSize, tag);
+  simd::MaskIterator mask_iter(mask);
+  while (mask_iter) {
+    size_t offset = mask_iter.Advance();
+    if (bucket->tags[offset] != tag) {
+      continue;
+    }
+    auto& node = bucket->slots[offset];
+    auto protect_node = hazcurr.protect(node);
+    if (protect_node) {
+      if (key_equal()(key, protect_node->getItem().first)) {
+        if (!filter(protect_node->getItem().second)) {
+          if (bucket->erase_slot(offset, protect_node, tag)) {
+            dec_size(iter.get_bucket_idx());
+          }
+          return false;
+        }
+        iter.set_node(bucket, offset, protect_node);
+        return true;
+      }
+    }
+  }
+  if (bucket->overflow.load()) {
+    iter.set_node(bucket->get_overflow(), 0, nullptr);
+    return filter_find_slot(iter, key, tag, std::move(filter));
+  } else {
+    return false;
+  }
+}
+
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename MatchFunc>
-bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::do_insert(uint32_t bucket_idx, iterator& iter, InsertType type, uint8_t tag,
-                                                    node_type* node, MatchFunc match) {
+bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::do_insert(uint32_t bucket_idx, iterator& iter, InsertType type,
+                                                              uint8_t tag, node_type* node, MatchFunc match) {
   auto& hazcurr = iter.hazptr_;
   while (1) {
     if (find_slot(iter, node->getItem().first, tag)) {
@@ -365,7 +415,8 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::do_insert(uint32_t bucket_idx, iterato
           if (current_node != nullptr) {
             current_node->retire();
           }
-          bucket->set_access_timestamp(iter.get_bucket_offset(), get_timestamp(opts_.time_scale));
+          // bucket->update_counters(iter.get_bucket_offset(), get_timestamp(opts_.time_scale));
+          bucket->touch_write(iter.get_bucket_offset(), opts_);
           return true;
         } else {
           continue;
@@ -405,43 +456,10 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::do_insert(uint32_t bucket_idx, iterato
     // }
   }
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
-std::tuple<typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::bucket_type*, uint32_t,
-           typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::node_type*, uint8_t>
-LRUCacheImpl<K, V, Hash, Eq, Alloc>::find_oldest_slot(size_t bucket_idx) const {
-  auto* bucket = buckets_ + bucket_idx;
-  bucket_type* eval_bucket = bucket;
-  bucket_type* evict_bucket = nullptr;
-  uint32_t oldest_ts = 0;
-  uint32_t evict_offset = 0;
-  uint8_t evict_slot_tag = 0;
-  node_type* evict_node = nullptr;
-  while (eval_bucket != nullptr) {
-    auto [min_ts, offset] = simd::simd_vector_min(eval_bucket->access_ts, kBucketSlotSize);
-    if (min_ts > 0) {
-      if (eval_bucket->access_ts[offset] != min_ts) {
-        // already updated by other thread, try again
-        return {nullptr, 0, nullptr, 0};
-      }
-      auto tag = eval_bucket->get_tag(offset);
-      if (tag >= bucket_type::kEmptyCtrl) {
-        return {nullptr, 0, nullptr, 0};
-      }
-      if (evict_bucket == nullptr || min_ts < oldest_ts) {
-        evict_offset = offset;
-        evict_bucket = eval_bucket;
-        oldest_ts = min_ts;
-        evict_slot_tag = tag;
-        evict_node = eval_bucket->slots[offset].load();
-      }
-    }
-    eval_bucket = eval_bucket->get_overflow();
-  }
-  return {evict_bucket, evict_offset, evict_node, evict_slot_tag};
-}
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-void LRUCacheImpl<K, V, Hash, Eq, Alloc>::try_evict(size_t bucket_idx) {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+void CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::try_evict(size_t bucket_idx) {
   auto& bucket_meta = bucket_metas_[bucket_idx];
   auto* bucket = buckets_ + bucket_idx;
   size_t retry = 0;
@@ -449,10 +467,11 @@ void LRUCacheImpl<K, V, Hash, Eq, Alloc>::try_evict(size_t bucket_idx) {
   if (!bucket_meta.evicting.compare_exchange_strong(evicting, true)) {
     return;
   }
-  while (bucket_meta.size.load() >= kBucketSlotSize && retry < kMaxEvictRetry) {
+  while (bucket_meta.size.load() >= (kBucketSlotSize - opts_.bucket_reserved_slots) && retry < kMaxEvictRetry) {
     retry++;
     ++evict_retry_counter_;
-    auto [evict_bucket, evict_offset, evict_node, evict_slot_tag] = find_oldest_slot(bucket_idx);
+    // auto [evict_bucket, evict_offset, evict_node, evict_slot_tag] = find_oldest_slot(bucket_idx);
+    auto [evict_bucket, evict_offset, evict_node, evict_slot_tag] = bucket->find_victim(opts_);
     if (evict_bucket == nullptr) {
       continue;
     }
@@ -463,54 +482,77 @@ void LRUCacheImpl<K, V, Hash, Eq, Alloc>::try_evict(size_t bucket_idx) {
   bucket_meta.evicting.store(false);
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator LRUCacheImpl<K, V, Hash, Eq, Alloc>::find(
-    const K& key) const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find(const K& key) const {
   auto [bucket_index, tag] = get_idx_and_tag(key);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
   if (find_slot(iter, key, tag)) {
-    iter.get_bucket()->set_access_timestamp(iter.get_bucket_offset(), get_timestamp(opts_.time_scale));
+    iter.get_bucket()->touch_read(iter.get_bucket_offset(), opts_);
     return iter;
   } else {
     return end();
   }
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator LRUCacheImpl<K, V, Hash, Eq, Alloc>::begin()
-    const noexcept {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+template <typename Filter>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find(const K& key, Filter&& filter) {
+  auto [bucket_index, tag] = get_idx_and_tag(key);
+  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  if (filter_find_slot(iter, key, tag, std::move(filter))) {
+    iter.get_bucket()->touch_read(iter.get_bucket_offset(), opts_);
+    return iter;
+  } else {
+    return end();
+  }
+}
+
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::begin() const noexcept {
   return iterator(this, buckets_, 0);
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator LRUCacheImpl<K, V, Hash, Eq, Alloc>::end() const noexcept {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::end() const noexcept {
   return iterator();
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator LRUCacheImpl<K, V, Hash, Eq, Alloc>::cbegin()
-    const noexcept {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::cbegin() const noexcept {
   return iterator(this, buckets_, 0);
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator LRUCacheImpl<K, V, Hash, Eq, Alloc>::cend()
-    const noexcept {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::cend() const noexcept {
   return iterator();
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::erase(const key_type& key) {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase(const key_type& key) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
   auto lock = lock_bucket(bucket_index);
   return erase_slot(iter, key, tag, [](const value_type&) { return true; });
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename... Args>
-std::pair<typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator, bool>
-LRUCacheImpl<K, V, Hash, Eq, Alloc>::emplace(Args&&... args) {
+std::pair<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
@@ -525,9 +567,10 @@ LRUCacheImpl<K, V, Hash, Eq, Alloc>::emplace(Args&&... args) {
   }
   return {std::move(iter), true};
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename... Args>
-bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::insert_or_assign(Args&&... args) {
+bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
@@ -542,10 +585,11 @@ bool LRUCacheImpl<K, V, Hash, Eq, Alloc>::insert_or_assign(Args&&... args) {
 
   return true;
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename... Args>
-std::optional<typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator> LRUCacheImpl<K, V, Hash, Eq, Alloc>::assign(
-    Args&&... args) {
+std::optional<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
@@ -560,10 +604,11 @@ std::optional<typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator> LRUC
   return iter;
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename Key, typename Value, typename Predicate>
-std::optional<typename LRUCacheImpl<K, V, Hash, Eq, Alloc>::const_iterator>
-LRUCacheImpl<K, V, Hash, Eq, Alloc>::assign_if(Key&& k, Value&& desired, Predicate&& predicate) {
+std::optional<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
+CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired, Predicate&& predicate) {
   auto* node = create<node_type>(cohort(), std::move(k), std::move(desired));
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
@@ -577,109 +622,33 @@ LRUCacheImpl<K, V, Hash, Eq, Alloc>::assign_if(Key&& k, Value&& desired, Predica
   }
   return iter;
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
 template <typename Predicate>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::erase_key_if(const key_type& key, Predicate&& predicate) {
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_key_if(const key_type& key, Predicate&& predicate) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
   // auto lock = lock_bucket(bucket_index);
   return erase_slot(iter, key, tag, std::forward<Predicate>(predicate));
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::bucket_count() const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::bucket_count() const {
   return bucket_count_;
 }
 
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::size() const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::size() const {
   return reinterpret_cast<size_t>(size_.readFull());
 }
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCacheImpl<K, V, Hash, Eq, Alloc>::capacity() const {
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::capacity() const {
   return reinterpret_cast<size_t>(capacity_.readFull());
 }
 
 }  // namespace detail
-
-template <class K, class V, class Hash, class Eq, class Alloc>
-LRUCache<K, V, Hash, Eq, Alloc>::LRUCache(const LRUCacheOptions& options) {
-  impl_ = new detail::LRUCacheImpl<K, V, Hash, Eq, Alloc>(options);
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-LRUCache<K, V, Hash, Eq, Alloc>::~LRUCache() {
-  delete impl_;
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator LRUCache<K, V, Hash, Eq, Alloc>::find(const K& k) const {
-  return impl_->find(k);
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCache<K, V, Hash, Eq, Alloc>::erase(const K& k) {
-  return impl_->erase(k);
-}
-
-template <class K, class V, class Hash, class Eq, class Alloc>
-template <typename... Args>
-std::pair<typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator, bool> LRUCache<K, V, Hash, Eq, Alloc>::emplace(
-    Args&&... args) {
-  return impl_->emplace(std::forward<Args>(args)...);
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-template <typename... Args>
-bool LRUCache<K, V, Hash, Eq, Alloc>::insert_or_assign(Args&&... args) {
-  return impl_->insert_or_assign(std::forward<Args>(args)...);
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-template <typename... Args>
-std::optional<typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator> LRUCache<K, V, Hash, Eq, Alloc>::assign(
-    Args&&... args) {
-  return impl_->assign(std::forward<Args>(args)...);
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-template <typename Key, typename Value, typename Predicate>
-std::optional<typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator> LRUCache<K, V, Hash, Eq, Alloc>::assign_if(
-    Key&& k, Value&& desired, Predicate&& predicate) {
-  return impl_->assign_if(std::move(k), std::move(desired), std::forward<Predicate>(predicate));
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-template <typename Predicate>
-size_t LRUCache<K, V, Hash, Eq, Alloc>::erase_key_if(const key_type& k, Predicate&& predicate) {
-  return impl_->erase_key_if(k, std::forward<Predicate>(predicate));
-}
-
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator LRUCache<K, V, Hash, Eq, Alloc>::begin() const noexcept {
-  return impl_->begin();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator LRUCache<K, V, Hash, Eq, Alloc>::end() const noexcept {
-  return impl_->end();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator LRUCache<K, V, Hash, Eq, Alloc>::cbegin() const noexcept {
-  return impl_->cbegin();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-typename LRUCache<K, V, Hash, Eq, Alloc>::const_iterator LRUCache<K, V, Hash, Eq, Alloc>::cend() const noexcept {
-  return impl_->cend();
-}
-
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCache<K, V, Hash, Eq, Alloc>::size() const noexcept {
-  return impl_->size();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCache<K, V, Hash, Eq, Alloc>::capcity() const noexcept {
-  return impl_->capcity();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-size_t LRUCache<K, V, Hash, Eq, Alloc>::bucket_count() const noexcept {
-  return impl_->bucket_count();
-}
-template <class K, class V, class Hash, class Eq, class Alloc>
-std::string LRUCache<K, V, Hash, Eq, Alloc>::stats() const {
-  return impl_->stats();
-}
 
 }  // namespace concurrent_cache

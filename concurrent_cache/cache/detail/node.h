@@ -29,12 +29,15 @@
 #include "folly/synchronization/Hazptr.h"
 
 #include "concurrent_cache/cache/detail/hazptr.h"
+#include "concurrent_cache/cache/options.h"
+#include "concurrent_cache/common/time.h"
+#include "concurrent_cache/simd/simd_ops.h"
 
 namespace concurrent_cache {
 
 namespace detail {
 
-static constexpr size_t kBucketSlotSize = 64;
+static constexpr size_t kBucketSlotSize = 32;
 
 void record_alive_node_counter(bool inc_or_dec);
 int64_t get_alive_node_counter();
@@ -161,9 +164,7 @@ class NodeT
       : item_(std::piecewise_construct, std::forward<Arg>(k), std::forward<Args>(args)...) {
     init(cohort);
   }
-  ~NodeT() {
-    // printf("~NodeT\n");
-  }
+  ~NodeT() {}
 
   void retire() { Parent::retire(HazptrDeleter<Allocator>()); }
 
@@ -272,23 +273,17 @@ struct Bucket {
 
   inline bool set_slot(size_t i, Node* p) {
     Node* expect = nullptr;
-    // auto* new_node = clone_node(p);
     if (slots[i].compare_exchange_strong(expect, p)) {
-      // node_pool.destroy(p);
       return true;
     }
-    // node_pool.destroy(new_node);
     return false;
   }
   inline Node* get_slot(size_t i) { return slots[i].load(); }
 
   inline bool replace_slot(size_t i, Node* current, Node* new_node) {
-    // auto* new_slot_node = clone_node(new_node);
     if (slots[i].compare_exchange_strong(current, new_node)) {
-      // node_pool.destroy(new_node);
       return true;
     }
-    // node_pool.destroy(new_slot_node);
     return false;
   }
 
@@ -297,6 +292,7 @@ struct Bucket {
       destroy_slot(i, slots[i].load(std::memory_order_relaxed), true);
     }
   }
+
   ~Bucket() {
     unlink_and_reclaim_nodes();
     if (overflow) {
@@ -312,38 +308,237 @@ struct LRUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
   LRUBucket() {
     for (size_t i = 0; i < kBucketSlotSize; i++) {
       access_ts[i] = std::numeric_limits<uint32_t>::max();
-      if (Parent::slots[i].load()) {
-        FOLLY_SAFE_FATAL("init non empty");
-      }
     }
   }
+  inline void clear_counters(size_t i) { access_ts[i] = std::numeric_limits<uint32_t>::max(); }
 
   inline bool erase_slot(size_t offset, typename Parent::Node* to_erase, uint8_t tag) {
-    if (Parent::set_tag(offset, tag, Parent::kBusyCtrl)) {
-      clear_access_timestamp(offset);
-      if (Parent::destroy_slot(offset, to_erase, true)) {
-        clear_access_timestamp(offset);
-        if (!Parent::set_tag(offset, Parent::kBusyCtrl, Parent::kEmptyCtrl)) {
-          FOLLY_SAFE_FATAL("set taf from kErasedCtrl to kEmptyCtrl");
-        }
-        // if (Parent::slots[offset].load()) {
-        //   FOLLY_SAFE_FATAL("not null after reempty");
-        // }
-        return true;
-      } else {
-        FOLLY_SAFE_FATAL("destroy_slot failed");
+    if (Parent::destroy_slot(offset, to_erase, true)) {
+      clear_counters(offset);
+      if (!Parent::set_tag(offset, tag, Parent::kEmptyCtrl)) {
+        FOLLY_SAFE_FATAL("set taf from kErasedCtrl to kEmptyCtrl");
       }
+      return true;
+    } else {
+      return false;
     }
-    return false;
   }
 
   Self* get_overflow() { return reinterpret_cast<Self*>(Parent::overflow.load()); }
-  inline void set_access_timestamp(size_t i, uint32_t ts) {
-    if (Parent::valid(i)) {
-      access_ts[i] = ts;
+
+  inline std::tuple<Self*, uint32_t, typename Parent::Node*, uint8_t> find_victim(const CacheOptions& opts) {
+    Self* evict_bucket = nullptr;
+    Self* eval_bucket = this;
+    uint32_t oldest_ts = 0;
+    uint32_t evict_offset = 0;
+    uint8_t evict_slot_tag = 0;
+    typename Parent::Node* evict_node = nullptr;
+    while (eval_bucket != nullptr) {
+      auto [min_ts, offset] = simd::simd_vector_min(eval_bucket->access_ts, kBucketSlotSize);
+      if (min_ts > 0) {
+        if (eval_bucket->access_ts[offset] != min_ts) {
+          // already updated by other thread, try again
+          return {nullptr, 0, nullptr, 0};
+        }
+        auto tag = eval_bucket->get_tag(offset);
+        if (tag >= Parent::kEmptyCtrl) {
+          return {nullptr, 0, nullptr, 0};
+        }
+        if (evict_bucket == nullptr || min_ts < oldest_ts) {
+          evict_offset = offset;
+          evict_bucket = eval_bucket;
+          oldest_ts = min_ts;
+          evict_slot_tag = tag;
+          evict_node = eval_bucket->slots[offset].load();
+        }
+      }
+      eval_bucket = eval_bucket->get_overflow();
+    }
+    return {evict_bucket, evict_offset, evict_node, evict_slot_tag};
+  }
+  inline void touch(size_t idx, const CacheOptions& opts) {
+    if (Parent::valid(idx)) {
+      access_ts[idx] = get_timestamp(opts.time_scale);
     }
   }
-  inline void clear_access_timestamp(size_t i) { access_ts[i] = std::numeric_limits<uint32_t>::max(); }
+  inline void touch_create(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
+  inline void touch_read(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
+  inline void touch_write(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
+};
+
+template <typename KeyType, typename ValueType, typename Allocator, template <typename> class Atom = std::atomic>
+struct FIFOBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
+  using Self = FIFOBucket<KeyType, ValueType, Allocator, Atom>;
+  using Parent = Bucket<KeyType, ValueType, Allocator, Atom>;
+  uint32_t create_ts[kBucketSlotSize];
+  FIFOBucket() {
+    for (size_t i = 0; i < kBucketSlotSize; i++) {
+      create_ts[i] = std::numeric_limits<uint32_t>::max();
+    }
+  }
+  inline void clear_counters(size_t i) { create_ts[i] = std::numeric_limits<uint32_t>::max(); }
+
+  inline bool erase_slot(size_t offset, typename Parent::Node* to_erase, uint8_t tag) {
+    if (Parent::destroy_slot(offset, to_erase, true)) {
+      clear_counters(offset);
+      if (!Parent::set_tag(offset, tag, Parent::kEmptyCtrl)) {
+        FOLLY_SAFE_FATAL("set taf from kErasedCtrl to kEmptyCtrl");
+      }
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  Self* get_overflow() { return reinterpret_cast<Self*>(Parent::overflow.load()); }
+
+  inline std::tuple<Self*, uint32_t, typename Parent::Node*, uint8_t> find_victim(const CacheOptions& opts) {
+    Self* evict_bucket = nullptr;
+    Self* eval_bucket = this;
+    uint32_t oldest_ts = 0;
+    uint32_t evict_offset = 0;
+    uint8_t evict_slot_tag = 0;
+    typename Parent::Node* evict_node = nullptr;
+    while (eval_bucket != nullptr) {
+      auto [min_ts, offset] = simd::simd_vector_min(eval_bucket->create_ts, kBucketSlotSize);
+      if (min_ts > 0) {
+        if (eval_bucket->create_ts[offset] != min_ts) {
+          // already updated by other thread, try again
+          return {nullptr, 0, nullptr, 0};
+        }
+        auto tag = eval_bucket->get_tag(offset);
+        if (tag >= Parent::kEmptyCtrl) {
+          return {nullptr, 0, nullptr, 0};
+        }
+        if (evict_bucket == nullptr || min_ts < oldest_ts) {
+          evict_offset = offset;
+          evict_bucket = eval_bucket;
+          oldest_ts = min_ts;
+          evict_slot_tag = tag;
+          evict_node = eval_bucket->slots[offset].load();
+        }
+      }
+      eval_bucket = eval_bucket->get_overflow();
+    }
+    return {evict_bucket, evict_offset, evict_node, evict_slot_tag};
+  }
+
+  inline void touch_create(size_t idx, const CacheOptions& opts) {
+    if (Parent::valid(idx)) {
+      create_ts[idx] = get_timestamp(opts.time_scale);
+    }
+  }
+  inline void touch_read(size_t idx, const CacheOptions& opts) {}
+  inline void touch_write(size_t idx, const CacheOptions& opts) {}
+};
+
+#define LFU_INIT_VAL 5
+#define LFU_MAX_VAL 254
+
+template <typename KeyType, typename ValueType, typename Allocator, template <typename> class Atom = std::atomic>
+struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
+  using Self = LFUBucket<KeyType, ValueType, Allocator, Atom>;
+  using Parent = Bucket<KeyType, ValueType, Allocator, Atom>;
+  uint32_t access_ts[kBucketSlotSize];
+  uint8_t lfu_counter[kBucketSlotSize];
+  LFUBucket() {
+    for (size_t i = 0; i < kBucketSlotSize; i++) {
+      clear_counters(i);
+    }
+  }
+
+  uint32_t lfu_time_elapsed(uint32_t ldt, uint32_t now) {
+    // unsigned long now = LFUGetTimeInMinutes();
+    if (now >= ldt) return now - ldt;
+    return std::numeric_limits<uint32_t>::max() - ldt + now;
+  }
+
+  uint8_t decr_get_lfu(size_t idx, uint32_t now, const CacheOptions& opts) {
+    uint32_t ldt = access_ts[idx];
+    unsigned long num_periods = opts.lfu_decay_time ? lfu_time_elapsed(ldt, now) / opts.lfu_decay_time : 0;
+    uint8_t counter = lfu_counter[idx];
+    if (num_periods) {
+      counter = (num_periods > counter) ? 0 : counter - num_periods;
+    }
+    return counter;
+  }
+
+  uint8_t incr_lfu(uint8_t counter, const CacheOptions& opts) {
+    if (counter == LFU_MAX_VAL) return LFU_MAX_VAL;
+    double r = (double)rand() / RAND_MAX;
+    double baseval = counter - LFU_INIT_VAL;
+    if (baseval < 0) baseval = 0;
+    double p = 1.0 / (baseval * opts.lfu_log_factor + 1);
+    if (r < p) counter++;
+    return counter;
+  }
+
+  inline void clear_counters(size_t i) {
+    access_ts[i] = std::numeric_limits<uint32_t>::max();
+    lfu_counter[i] = std::numeric_limits<uint8_t>::max();
+  }
+
+  inline bool erase_slot(size_t offset, typename Parent::Node* to_erase, uint8_t tag) {
+    if (Parent::destroy_slot(offset, to_erase, true)) {
+      clear_counters(offset);
+      if (!Parent::set_tag(offset, tag, Parent::kEmptyCtrl)) {
+        FOLLY_SAFE_FATAL("set taf from kErasedCtrl to kEmptyCtrl");
+      }
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  Self* get_overflow() { return reinterpret_cast<Self*>(Parent::overflow.load()); }
+
+  std::tuple<Self*, uint32_t, typename Parent::Node*, uint8_t> find_victim(const CacheOptions& opts) {
+    uint32_t now = get_timestamp(opts.time_scale);
+    uint8_t result_counters[kBucketSlotSize];
+
+    Self* evict_bucket = nullptr;
+    Self* eval_bucket = this;
+    uint32_t min_lfu_counter = 0;
+    uint32_t evict_offset = 0;
+    uint8_t evict_slot_tag = 0;
+    typename Parent::Node* evict_node = nullptr;
+    uint8_t tmp_lfu_counter[kBucketSlotSize];
+    while (eval_bucket != nullptr) {
+      simd::simd_decr_lfu_counters(eval_bucket->access_ts, kBucketSlotSize, now, opts.lfu_decay_time,
+                                   eval_bucket->lfu_counter, result_counters);
+      auto [min_counter, offset] = simd::simd_vector_min(result_counters, kBucketSlotSize);
+      if (min_counter > 0) {
+        auto tag = eval_bucket->get_tag(offset);
+        if (tag >= Parent::kEmptyCtrl) {
+          return {nullptr, 0, nullptr, 0};
+        }
+        if (evict_bucket == nullptr || min_counter < min_lfu_counter) {
+          evict_offset = offset;
+          evict_bucket = eval_bucket;
+          min_lfu_counter = min_counter;
+          evict_slot_tag = tag;
+          evict_node = eval_bucket->slots[offset].load();
+        }
+      }
+      eval_bucket = eval_bucket->get_overflow();
+    }
+    return {evict_bucket, evict_offset, evict_node, evict_slot_tag};
+  }
+  inline void touch(size_t idx, const CacheOptions& opts) {
+    if (Parent::valid(idx)) {
+      uint32_t now = get_timestamp(opts.time_scale);
+      uint8_t counter = decr_get_lfu(idx, now, opts);
+      counter = incr_lfu(counter, opts);
+      lfu_counter[idx] = counter;
+      access_ts[idx] = now;
+    }
+  }
+  inline void touch_create(size_t idx, const CacheOptions& opts) {
+    lfu_counter[idx] = LFU_INIT_VAL;
+    access_ts[idx] = get_timestamp(opts.time_scale);
+  }
+  inline void touch_read(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
+  inline void touch_write(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
 };
 
 }  // namespace detail

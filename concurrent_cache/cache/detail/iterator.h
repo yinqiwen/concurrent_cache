@@ -39,7 +39,6 @@ class Iterator {
   using allocator_type = typename Map::allocator_type;
   friend Map;
   static constexpr uint32_t kBucketIdxLimit = std::numeric_limits<uint32_t>::max();
-  //   friend class ConcurrentHashMap;
 
   const value_type& operator*() const { return node_->getItem(); }
 

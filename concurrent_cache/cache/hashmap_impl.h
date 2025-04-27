@@ -33,7 +33,6 @@
 #include "concurrent_cache/cache/detail/iterator.h"
 #include "concurrent_cache/cache/detail/node.h"
 #include "concurrent_cache/common/allign.h"
-
 #include "concurrent_cache/simd/simd_ops.h"
 
 namespace concurrent_cache {
@@ -78,6 +77,7 @@ class ConcurrentFixedHashMapImpl {
 
   size_t size() const;
   size_t capacity() const;
+  std::string stats() const;
 
  private:
   static constexpr size_t kDefaultMaxSize = 1024 * 1024;
@@ -96,12 +96,18 @@ class ConcurrentFixedHashMapImpl {
   T* create(Args&&... args) {
     T* memory = reinterpret_cast<T*>(Allocator().allocate(sizeof(T)));
     new (memory) T(std::forward<Args>(args)...);
+    if constexpr (std::is_same_v<node_type, T>) {
+      record_alive_node_counter(true);
+    }
     return memory;
   }
   template <typename T>
   void destroy(T* p) {
     p->~T();
     Allocator().deallocate((uint8_t*)p, sizeof(T));
+    if constexpr (std::is_same_v<node_type, T>) {
+      record_alive_node_counter(false);
+    }
   }
 
   std::pair<uint32_t, uint8_t> get_idx_and_tag(const key_type& key) const;
@@ -129,6 +135,7 @@ class ConcurrentFixedHashMapImpl {
 
   folly::ThreadCachedInt<int64_t> size_{0};
   folly::ThreadCachedInt<int64_t> capacity_{0};
+  folly::ThreadCachedInt<int64_t> overflow_bucket_size_{0};
 };
 
 template <class K, class V, class Hash, class Eq, class Alloc>
@@ -138,7 +145,6 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::ConcurrentFixedHashMapImpl(si
   }
   size_t actual_max_size = static_cast<size_t>(init_size);
 
-  // size_t actual_max_size = static_cast<size_t>(options_.max_size);
   actual_max_size = align_to<size_t>(actual_max_size, kBucketSlotSize);
   bucket_count_ = actual_max_size / kBucketSlotSize;
   if (actual_max_size % kBucketSlotSize > 0) {
@@ -157,7 +163,6 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::ConcurrentFixedHashMapImpl(si
     new (bucket_mutexs_ + i) bucket_mutex_t();
   }
   capacity_.set(bucket_count_ * kBucketSlotSize);
-  // node_pool_ = std::make_unique<Pool<node_type, allocator_type>>(actual_max_size);
 }
 template <class K, class V, class Hash, class Eq, class Alloc>
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::~ConcurrentFixedHashMapImpl() {
@@ -339,6 +344,7 @@ bool ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::do_insert(std::unique_lo
       iter.set_node(new_bucket, 0, node);
       hazcurr.reset_protection(node);
       ++size_;
+      ++overflow_bucket_size_;
       return true;
     }
   }
@@ -409,15 +415,14 @@ bool ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::insert_or_assign(Args&&.
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
-  // auto proxy = bucket_mutexs_[bucket_index].lock();
-  // auto lock = lock_bucket(bucket_index);
-  auto success = do_insert(nullptr, iter, InsertType::ANY, tag, node, [](const V&) { return false; });
-  // bucket_mutexs_[bucket_index].unlock(proxy);
+
+  auto lock = lock_bucket(bucket_index);
+  auto success = do_insert(&lock, iter, InsertType::ANY, tag, node, [](const V&) { return false; });
   if (!success) {
     destroy(node);
     return false;
   }
-  // node_pool_->Recycle(node);
+
   return true;
 }
 template <class K, class V, class Hash, class Eq, class Alloc>
@@ -443,12 +448,11 @@ std::optional<typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::assign_if(Key&& k, Value&& desired, Predicate&& predicate) {
   auto* node = create<node_type>(cohort(), std::move(k), std::move(desired));
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
-  // auto* node = node_pool_->Allocate(cohort(), node_pool_.get(), std::move(k), std::move(desired));
 
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
   auto lock = lock_bucket(bucket_index);
   auto success = do_insert(&lock, iter, InsertType::MATCH, tag, node, std::forward<Predicate>(predicate));
-  // bucket_mutexs_[bucket_index].unlock(proxy);
+
   if (!success) {
     destroy(node);
     return {};
@@ -475,6 +479,15 @@ size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::size() const {
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::capacity() const {
   return reinterpret_cast<size_t>(capacity_.readFull());
+}
+
+template <class K, class V, class Hash, class Eq, class Alloc>
+std::string ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::stats() const {
+  std::string info;
+  info.append("node_counter:").append(std::to_string(get_alive_node_counter())).append(",");
+  info.append("root_bucket_size:").append(std::to_string(bucket_count_)).append(",");
+  info.append("overflow_bucket_size:").append(std::to_string(overflow_bucket_size_.readFull())).append(",");
+  return info;
 }
 
 }  // namespace detail
@@ -558,6 +571,11 @@ size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::capcity() const noexcept {
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::bucket_count() const noexcept {
   return impl_->bucket_count();
+}
+
+template <class K, class V, class Hash, class Eq, class Alloc>
+std::string ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::stats() const {
+  return impl_->stats();
 }
 
 }  // namespace concurrent_cache
