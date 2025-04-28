@@ -37,7 +37,7 @@ namespace concurrent_cache {
 
 namespace detail {
 
-static constexpr size_t kBucketSlotSize = 32;
+static constexpr size_t kBucketSlotSize = 64;
 
 void record_alive_node_counter(bool inc_or_dec);
 int64_t get_alive_node_counter();
@@ -432,49 +432,78 @@ struct FIFOBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
   inline void touch_write(size_t idx, const CacheOptions& opts) {}
 };
 
-#define LFU_INIT_VAL 5
+#define LFU_INIT_VAL 2
 #define LFU_MAX_VAL 254
 
+// tiny LFU
 template <typename KeyType, typename ValueType, typename Allocator, template <typename> class Atom = std::atomic>
 struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
   using Self = LFUBucket<KeyType, ValueType, Allocator, Atom>;
   using Parent = Bucket<KeyType, ValueType, Allocator, Atom>;
-  uint32_t access_ts[kBucketSlotSize];
-  uint8_t lfu_counter[kBucketSlotSize];
+  // uint32_t access_ts[kBucketSlotSize];
+  std::atomic<uint8_t> lfu_counter[kBucketSlotSize];
+  std::atomic<uint32_t> access_counter{0};
+  std::atomic<bool> decaying_lfu_counters{false};
   LFUBucket() {
     for (size_t i = 0; i < kBucketSlotSize; i++) {
       clear_counters(i);
     }
   }
 
-  uint32_t lfu_time_elapsed(uint32_t ldt, uint32_t now) {
-    // unsigned long now = LFUGetTimeInMinutes();
-    if (now >= ldt) return now - ldt;
-    return std::numeric_limits<uint32_t>::max() - ldt + now;
-  }
-
-  uint8_t decr_get_lfu(size_t idx, uint32_t now, const CacheOptions& opts) {
-    uint32_t ldt = access_ts[idx];
-    unsigned long num_periods = opts.lfu_decay_time ? lfu_time_elapsed(ldt, now) / opts.lfu_decay_time : 0;
-    uint8_t counter = lfu_counter[idx];
-    if (num_periods) {
-      counter = (num_periods > counter) ? 0 : counter - num_periods;
+  void try_decay_cache_lfu_counter(const CacheOptions& opts) {
+    auto count = access_counter.fetch_add(1);
+    if (count % opts.lfu_update_window_size == 0) {
+      bool expect = false;
+      if (decaying_lfu_counters.compare_exchange_strong(expect, true)) {
+        simd::simd_decay_lfu_counters(reinterpret_cast<uint8_t*>(lfu_counter), kBucketSlotSize,
+                                      reinterpret_cast<const uint8_t*>(Parent::tags), Parent::kEmptyCtrl);
+        decaying_lfu_counters.store(false);
+      }
     }
-    return counter;
   }
 
-  uint8_t incr_lfu(uint8_t counter, const CacheOptions& opts) {
-    if (counter == LFU_MAX_VAL) return LFU_MAX_VAL;
-    double r = (double)rand() / RAND_MAX;
-    double baseval = counter - LFU_INIT_VAL;
-    if (baseval < 0) baseval = 0;
-    double p = 1.0 / (baseval * opts.lfu_log_factor + 1);
-    if (r < p) counter++;
-    return counter;
+  // uint32_t lfu_time_elapsed(uint32_t ldt, uint32_t now) {
+  //   // unsigned long now = LFUGetTimeInMinutes();
+  //   if (now >= ldt) return now - ldt;
+  //   return std::numeric_limits<uint32_t>::max() - ldt + now;
+  // }
+
+  // uint8_t decr_get_lfu(size_t idx, uint32_t now, const CacheOptions& opts) {
+  //   uint32_t ldt = access_ts[idx];
+  //   unsigned long num_periods = opts.lfu_decay_time ? lfu_time_elapsed(ldt, now) / opts.lfu_decay_time : 0;
+  //   uint8_t counter = lfu_counter[idx];
+  //   if (num_periods) {
+  //     counter = (num_periods > counter) ? 0 : counter - num_periods;
+  //   }
+  //   return counter;
+  // }
+
+  void incr_lfu(size_t offset, const CacheOptions& opts) {
+    // slow
+    // if (counter == LFU_MAX_VAL) return LFU_MAX_VAL;
+    // double r = (double)rand() / RAND_MAX;
+    // double baseval = counter - LFU_INIT_VAL;
+    // if (baseval < 0) baseval = 0;
+    // double p = 1.0 / (baseval * opts.lfu_log_factor + 1);
+    // if (r < p) counter++;
+    // return counter;
+    // if (counter == LFU_MAX_VAL) return LFU_MAX_VAL;
+    // return counter + 1;
+
+    while (1) {
+      auto current = lfu_counter[offset].load();
+      if (current >= LFU_MAX_VAL) {
+        break;
+      }
+      if (lfu_counter[offset].compare_exchange_strong(current, current + 1)) {
+        break;
+      }
+    }
+    try_decay_cache_lfu_counter(opts);
   }
 
   inline void clear_counters(size_t i) {
-    access_ts[i] = std::numeric_limits<uint32_t>::max();
+    // access_ts[i] = std::numeric_limits<uint32_t>::max();
     lfu_counter[i] = std::numeric_limits<uint8_t>::max();
   }
 
@@ -502,23 +531,20 @@ struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
     uint32_t evict_offset = 0;
     uint8_t evict_slot_tag = 0;
     typename Parent::Node* evict_node = nullptr;
-    uint8_t tmp_lfu_counter[kBucketSlotSize];
+
     while (eval_bucket != nullptr) {
-      simd::simd_decr_lfu_counters(eval_bucket->access_ts, kBucketSlotSize, now, opts.lfu_decay_time,
-                                   eval_bucket->lfu_counter, result_counters);
-      auto [min_counter, offset] = simd::simd_vector_min(result_counters, kBucketSlotSize);
-      if (min_counter > 0) {
-        auto tag = eval_bucket->get_tag(offset);
-        if (tag >= Parent::kEmptyCtrl) {
-          return {nullptr, 0, nullptr, 0};
-        }
-        if (evict_bucket == nullptr || min_counter < min_lfu_counter) {
-          evict_offset = offset;
-          evict_bucket = eval_bucket;
-          min_lfu_counter = min_counter;
-          evict_slot_tag = tag;
-          evict_node = eval_bucket->slots[offset].load();
-        }
+      auto [min_counter, offset] =
+          simd::simd_vector_min(reinterpret_cast<const uint8_t*>(eval_bucket->lfu_counter), kBucketSlotSize);
+      auto tag = eval_bucket->get_tag(offset);
+      if (tag >= Parent::kEmptyCtrl) {
+        return {nullptr, 0, nullptr, 0};
+      }
+      if (evict_bucket == nullptr || min_counter < min_lfu_counter) {
+        evict_offset = offset;
+        evict_bucket = eval_bucket;
+        min_lfu_counter = min_counter;
+        evict_slot_tag = tag;
+        evict_node = eval_bucket->slots[offset].load();
       }
       eval_bucket = eval_bucket->get_overflow();
     }
@@ -526,16 +552,15 @@ struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
   }
   inline void touch(size_t idx, const CacheOptions& opts) {
     if (Parent::valid(idx)) {
-      uint32_t now = get_timestamp(opts.time_scale);
-      uint8_t counter = decr_get_lfu(idx, now, opts);
-      counter = incr_lfu(counter, opts);
-      lfu_counter[idx] = counter;
-      access_ts[idx] = now;
+      // uint8_t counter = decr_get_lfu(idx, now, opts);
+      // counter = incr_lfu(counter, opts);
+      // lfu_counter[idx] = incr_lfu(lfu_counter[idx], opts);
+      incr_lfu(idx, opts);
     }
   }
   inline void touch_create(size_t idx, const CacheOptions& opts) {
     lfu_counter[idx] = LFU_INIT_VAL;
-    access_ts[idx] = get_timestamp(opts.time_scale);
+    // access_ts[idx] = get_timestamp(opts.time_scale);
   }
   inline void touch_read(size_t idx, const CacheOptions& opts) { touch(idx, opts); }
   inline void touch_write(size_t idx, const CacheOptions& opts) { touch(idx, opts); }

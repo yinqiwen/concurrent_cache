@@ -40,17 +40,17 @@ void enable_estimate_timestamp_updater() {
   }
 }
 
-uint32_t get_timestamp(Timescale scale) {
+uint64_t get_timestamp(Timescale scale) {
   switch (scale) {
     case Timescale::MILLISECOND: {
-      return static_cast<uint32_t>(g_current_ms - g_app_start_ms);
+      return static_cast<uint64_t>(g_current_ms - g_app_start_ms);
     }
     case Timescale::MICROSECOND: {
-      return static_cast<uint32_t>(g_current_us - g_app_start_us);
+      return static_cast<uint64_t>(g_current_us - g_app_start_us);
     }
     case Timescale::SECOND:
     default: {
-      return static_cast<uint32_t>(g_current_s - g_app_start_s);
+      return static_cast<uint64_t>(g_current_s - g_app_start_s);
     }
   }
 }

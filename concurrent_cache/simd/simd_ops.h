@@ -27,8 +27,7 @@ uint64_t simd_vector_match(const uint8_t* data, size_t len, uint8_t v);
 
 std::pair<uint32_t, uint16_t> simd_vector_min(const uint32_t* data, size_t len);
 std::pair<uint8_t, uint16_t> simd_vector_min(const uint8_t* data, size_t len);
-void simd_decr_lfu_counters(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay, const uint8_t* counters,
-                            uint8_t* result_counters);
+void simd_decay_lfu_counters(uint8_t* counters, size_t len, const uint8_t* tags, uint8_t max_tag);
 
 class MaskIterator {
  public:

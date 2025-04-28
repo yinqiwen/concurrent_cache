@@ -133,6 +133,7 @@ class LFU : public TestCache {
   int Init(size_t cache_size) {
     concurrent_cache::CacheOptions opts;
     opts.max_size = cache_size;
+    opts.time_scale = concurrent_cache::Timescale::MILLISECOND;
     cache_ = std::make_unique<concurrent_cache::LFUCache<uint64_t, std::string>>(opts);
     return 0;
   }

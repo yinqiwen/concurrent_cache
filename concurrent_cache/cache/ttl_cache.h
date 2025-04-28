@@ -45,24 +45,27 @@ class TTLCache {
   size_t erase(const KeyType& k);
 
   template <typename Key, typename Value, typename DURATION>
+  std::pair<const_iterator, bool> emplace(Key&& k, Value&& v, DURATION ttl);
+  template <typename Key, typename Value, typename DURATION>
   std::pair<const_iterator, bool> insert(Key&& k, Value&& v, DURATION ttl);
 
-  template <typename... Args>
-  bool insert_or_assign(Args&&... args);
-  template <typename... Args>
-  std::optional<const_iterator> assign(Args&&... args);
+  template <typename Key, typename Value, typename DURATION>
+  bool insert_or_assign(Key&& k, Value&& v, DURATION ttl);
+  template <typename Key, typename Value, typename DURATION>
+  std::optional<const_iterator> assign(Key&& k, Value&& v, DURATION ttl);
 
-  template <typename Key, typename Value, typename Predicate>
-  std::optional<const_iterator> assign_if(Key&& k, Value&& desired, Predicate&& predicate);
-  template <typename Key, typename Value>
-  std::optional<const_iterator> assign_if_equal(Key&& k, const ValueType& expected, Value&& desired) {
-    return assign_if(k, std::move(desired), [&expected](const ValueType& v) { return v == expected; });
+  template <typename Key, typename Value, typename Predicate, typename DURATION>
+  std::optional<const_iterator> assign_if(Key&& k, Value&& desired, DURATION ttl, Predicate&& predicate);
+  template <typename Key, typename Value, typename DURATION>
+  std::optional<const_iterator> assign_if_equal(Key&& k, const ValueType& expected, Value&& desired, DURATION ttl) {
+    return assign_if(k, std::move(desired), ttl,
+                     [&expected](const ttl_value_type& v) { return v.value() == expected; });
   }
 
   template <typename Predicate>
   size_type erase_key_if(const key_type& k, Predicate&& predicate);
   size_type erase_if_equal(const key_type& k, const ValueType& expected) {
-    return erase_key_if(k, [&expected](const ValueType& v) { return v == expected; });
+    return erase_key_if(k, [&expected](const ttl_value_type& v) { return v.value() == expected; });
   }
   const_iterator cend() const noexcept;
   const_iterator cbegin() const noexcept;
@@ -98,35 +101,44 @@ template <class K, class V, class Hash, class Eq, class Alloc,
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::erase(const K& k) {
   return impl_->erase(k);
 }
-
+template <class K, class V, class Hash, class Eq, class Alloc,
+          template <typename, typename, typename> class CacheBucket>
+template <typename Key, typename Value, typename DURATION>
+std::pair<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
+TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Key&& k, Value&& v, DURATION ttl) {
+  auto ttl_val = make_ttl_value<V, Value, DURATION>(std::move(v), ttl);
+  return impl_->emplace(std::move(k), std::move(ttl_val));
+}
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename> class CacheBucket>
 template <typename Key, typename Value, typename DURATION>
 std::pair<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert(Key&& k, Value&& v, DURATION ttl) {
-  auto ttl_val = make_ttl_value(std::move(v), ttl);
-  return impl_->emplace(std::move(k), std::move(ttl_val));
+  return emplace(std::move(k), std::move(v), ttl);
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename> class CacheBucket>
-template <typename... Args>
-bool TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Args&&... args) {
-  return impl_->insert_or_assign(std::forward<Args>(args)...);
+template <typename Key, typename Value, typename DURATION>
+bool TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Key&& k, Value&& v, DURATION ttl) {
+  auto ttl_val = make_ttl_value<V, Value, DURATION>(std::move(v), ttl);
+  return impl_->insert_or_assign(std::forward<Key>(k), std::move(ttl_val));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename> class CacheBucket>
-template <typename... Args>
+template <typename Key, typename Value, typename DURATION>
 std::optional<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
-TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Args&&... args) {
-  return impl_->assign(std::forward<Args>(args)...);
+TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Key&& k, Value&& v, DURATION ttl) {
+  auto ttl_val = make_ttl_value<V, Value, DURATION>(std::move(v), ttl);
+  return impl_->assign(std::forward<Key>(k), std::move(ttl_val));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename> class CacheBucket>
-template <typename Key, typename Value, typename Predicate>
+template <typename Key, typename Value, typename Predicate, typename DURATION>
 std::optional<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
-TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired, Predicate&& predicate) {
-  return impl_->assign_if(std::move(k), std::move(desired), std::forward<Predicate>(predicate));
+TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired, DURATION ttl, Predicate&& predicate) {
+  auto ttl_val = make_ttl_value<V, Value, DURATION>(std::move(desired), ttl);
+  return impl_->assign_if(std::move(k), std::move(ttl_val), std::forward<Predicate>(predicate));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename> class CacheBucket>

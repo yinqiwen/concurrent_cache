@@ -25,7 +25,8 @@ struct CacheOptions {
   size_t max_size = 1024 * 1024;
   Timescale time_scale = Timescale::MILLISECOND;
   size_t bucket_reserved_slots = 4;
-  int lfu_log_factor = 10;
-  int lfu_decay_time = 1;
+  size_t lfu_update_window_size = 512;
+  // int lfu_log_factor = 10;
+  // int lfu_decay_time = 1;
 };
 }  // namespace concurrent_cache

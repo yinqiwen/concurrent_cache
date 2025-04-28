@@ -132,32 +132,58 @@ HWY_INLINE std::pair<T, uint16_t> simd_vector_min_impl(const T* data, size_t len
   return {min_val, 0};
 }
 
-HWY_INLINE void simd_decr_lfu_counters_impl(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay,
-                                            const uint8_t* counters, uint8_t* result_counters) {
-  using D = hn::ScalableTag<uint32_t>;
-  const hn::Rebind<uint8_t, D> du8;
+HWY_INLINE void simd_decay_lfu_counters_impl(uint8_t* counters, size_t len, const uint8_t* tags, uint8_t max_tag) {
+  using D = hn::ScalableTag<uint8_t>;
   const D d;
   constexpr auto lanes = hn::Lanes(d);
-  uint32_t max_ts = std::numeric_limits<uint32_t>::max();
-  const hn::Vec<D> max_ts_val = hn::Set(d, max_ts);
-  const hn::Vec<D> now_val = hn::Set(d, now);
-  const hn::Vec<D> decay_val = hn::Set(d, decay);
-  auto zero_u8 = hn::Zero(du8);
-  auto max_counter_v = hn::Set(du8, std::numeric_limits<int8_t>::max());
+  auto max_tag_v = hn::Set(d, max_tag);
+  auto div_v = hn::Set(d, 2);
+  auto max_counter_v = hn::Set(d, std::numeric_limits<int8_t>::max());
   size_t idx = 0;
   for (; (idx + lanes) <= len; idx += lanes) {
-    auto ts_v = hn::LoadU(d, ts + idx);
-    auto counter_v = hn::LoadU(du8, counters + idx);
-    auto filter = hn::Lt(ts_v, max_ts_val);
-    auto elased = hn::Sub(now_val, ts_v);
-    auto period = hn::Div(elased, decay_val);
-    auto period_u8 = hn::U8FromU32(period);
-    auto mask = hn::Gt(period_u8, counter_v);
-    auto final_v = hn::IfThenZeroElse(mask, hn::Sub(counter_v, period_u8));
-    final_v = hn::IfThenElse(hn::DemoteMaskTo(du8, d, filter), max_counter_v, final_v);
-    hn::StoreU(final_v, du8, result_counters + idx);
+    auto tag_v = hn::LoadU(d, tags + idx);
+    auto counter_v = hn::LoadU(d, counters + idx);
+    auto mask = hn::Lt(tag_v, max_tag_v);
+    auto decay_counter_v = hn::Div(counter_v, div_v);
+    auto final_counter_v = hn::IfThenElse(mask, decay_counter_v, max_counter_v);
+    hn::StoreU(final_counter_v, d, counters + idx);
+    // auto filter = hn::Lt(ts_v, max_ts_val);
+    // auto elased = hn::Sub(now_val, ts_v);
+    // auto period = hn::Div(elased, decay_val);
+    // auto period_u8 = hn::U8FromU32(period);
+    // auto mask = hn::Gt(period_u8, counter_v);
+    // auto final_v = hn::IfThenZeroElse(mask, hn::Sub(counter_v, period_u8));
+    // final_v = hn::IfThenElse(hn::DemoteMaskTo(du8, d, filter), max_counter_v, final_v);
+    // hn::StoreU(final_v, du8, result_counters + idx);
   }
 }
+
+// HWY_INLINE void simd_decr_lfu_counters_impl(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay,
+//                                             const uint8_t* counters, uint8_t* result_counters) {
+//   using D = hn::ScalableTag<uint32_t>;
+//   const hn::Rebind<uint8_t, D> du8;
+//   const D d;
+//   constexpr auto lanes = hn::Lanes(d);
+//   uint32_t max_ts = std::numeric_limits<uint32_t>::max();
+//   const hn::Vec<D> max_ts_val = hn::Set(d, max_ts);
+//   const hn::Vec<D> now_val = hn::Set(d, now);
+//   const hn::Vec<D> decay_val = hn::Set(d, decay);
+//   auto zero_u8 = hn::Zero(du8);
+//   auto max_counter_v = hn::Set(du8, std::numeric_limits<int8_t>::max());
+//   size_t idx = 0;
+//   for (; (idx + lanes) <= len; idx += lanes) {
+//     auto ts_v = hn::LoadU(d, ts + idx);
+//     auto counter_v = hn::LoadU(du8, counters + idx);
+//     auto filter = hn::Lt(ts_v, max_ts_val);
+//     auto elased = hn::Sub(now_val, ts_v);
+//     auto period = hn::Div(elased, decay_val);
+//     auto period_u8 = hn::U8FromU32(period);
+//     auto mask = hn::Gt(period_u8, counter_v);
+//     auto final_v = hn::IfThenZeroElse(mask, hn::Sub(counter_v, period_u8));
+//     final_v = hn::IfThenElse(hn::DemoteMaskTo(du8, d, filter), max_counter_v, final_v);
+//     hn::StoreU(final_v, du8, result_counters + idx);
+//   }
+// }
 
 }  // namespace HWY_NAMESPACE
 }  // namespace simd
@@ -184,10 +210,15 @@ std::pair<uint8_t, uint16_t> simd_vector_min(const uint8_t* data, size_t len) {
   return HWY_DYNAMIC_DISPATCH_T(Table)(data, len);
 }
 
-void simd_decr_lfu_counters(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay, const uint8_t* counters,
-                            uint8_t* result_counters) {
-  HWY_EXPORT_T(Table, simd_decr_lfu_counters_impl);
-  return HWY_DYNAMIC_DISPATCH_T(Table)(ts, len, now, decay, counters, result_counters);
+// void simd_decr_lfu_counters(const uint32_t* ts, size_t len, uint32_t now, uint32_t decay, const uint8_t* counters,
+//                             uint8_t* result_counters) {
+//   HWY_EXPORT_T(Table, simd_decr_lfu_counters_impl);
+//   return HWY_DYNAMIC_DISPATCH_T(Table)(ts, len, now, decay, counters, result_counters);
+// }
+
+void simd_decay_lfu_counters(uint8_t* counters, size_t len, const uint8_t* tags, uint8_t max_tag) {
+  HWY_EXPORT_T(Table, simd_decay_lfu_counters_impl);
+  return HWY_DYNAMIC_DISPATCH_T(Table)(counters, len, tags, max_tag);
 }
 
 }  // namespace simd

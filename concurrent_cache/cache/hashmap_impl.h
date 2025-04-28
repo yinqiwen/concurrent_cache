@@ -26,9 +26,8 @@
 #include <utility>
 #include <vector>
 
-#include <folly/synchronization/Hazptr.h>
-
 #include "folly/ThreadCachedInt.h"
+#include "folly/synchronization/Hazptr.h"
 
 #include "concurrent_cache/cache/detail/iterator.h"
 #include "concurrent_cache/cache/detail/node.h"
@@ -127,7 +126,6 @@ class ConcurrentFixedHashMapImpl {
     return std::unique_lock<bucket_mutex_t>(bucket_mutexs_[bucket_idx]);
   }
 
-  // folly::hazptr_obj_cohort<std::atomic> cohort_;
   bucket_type* buckets_{nullptr};
   bucket_mutex_t* bucket_mutexs_{nullptr};
   size_t bucket_count_{0};

@@ -37,12 +37,17 @@ enum class Timescale {
   MICROSECOND,
 };
 void enable_estimate_timestamp_updater();
-uint32_t get_timestamp(Timescale scale);
+uint64_t get_timestamp(Timescale scale);
 
 template <typename T>
 struct ValueWithTTL {
   T val;
   uint64_t expire_at_ms;
+
+  ValueWithTTL() {}
+  template <typename V>
+  explicit ValueWithTTL(V&& v, uint64_t ttl) : val(std::forward<V>(v)), expire_at_ms(ttl) {}
+
   const T& value() const { return val; }
   uint64_t ttl() const { return pttl() / 1000; }
   uint64_t pttl() const {
@@ -54,11 +59,11 @@ struct ValueWithTTL {
   }
 };
 
-template <typename T, typename DURATION>
-ValueWithTTL<T> make_ttl_value(T&& v, DURATION ttl) {
+template <typename T, typename R, typename DURATION>
+ValueWithTTL<T> make_ttl_value(R&& v, DURATION ttl) {
   auto expire_at_ms =
       get_timestamp(Timescale::MILLISECOND) + std::chrono::duration_cast<std::chrono::milliseconds>(ttl).count();
-  return ValueWithTTL<T>{std::forward<T>(v), expire_at_ms};
+  return ValueWithTTL<T>(std::forward<R>(v), expire_at_ms);
 }
 
 }  // namespace concurrent_cache

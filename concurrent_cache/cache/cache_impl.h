@@ -467,11 +467,13 @@ void CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::try_evict(size_t bucket_idx)
   if (!bucket_meta.evicting.compare_exchange_strong(evicting, true)) {
     return;
   }
+
   while (bucket_meta.size.load() >= (kBucketSlotSize - opts_.bucket_reserved_slots) && retry < kMaxEvictRetry) {
     retry++;
     ++evict_retry_counter_;
     // auto [evict_bucket, evict_offset, evict_node, evict_slot_tag] = find_oldest_slot(bucket_idx);
     auto [evict_bucket, evict_offset, evict_node, evict_slot_tag] = bucket->find_victim(opts_);
+
     if (evict_bucket == nullptr) {
       continue;
     }
@@ -555,12 +557,12 @@ std::pair<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
+
+  printf("####key:%llu\n", node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
-  // auto proxy = bucket_metas_[bucket_index].lock.lock();
-  // auto lock = lock_bucket(bucket_index);
   try_evict(bucket_index);
   auto success = do_insert(bucket_index, iter, InsertType::DOES_NOT_EXIST, tag, node, [](const V&) { return false; });
-  // bucket_metas_[bucket_index].lock.unlock(proxy);
+
   if (!success) {
     destroy(node);
     return {std::move(iter), false};
@@ -593,10 +595,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
-  // auto proxy = bucket_metas_[bucket_index].lock.lock();
-  // auto lock = lock_bucket(bucket_index);
   auto success = do_insert(bucket_index, iter, InsertType::MUST_EXIST, tag, node, [](const V&) { return false; });
-  // bucket_metas_[bucket_index].lock.unlock(proxy);
   if (!success) {
     destroy(node);
     return {};
@@ -612,10 +611,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desire
   auto* node = create<node_type>(cohort(), std::move(k), std::move(desired));
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
-  // auto proxy = bucket_metas_[bucket_index].lock.lock();
-  // auto lock = lock_bucket(bucket_index);
   auto success = do_insert(bucket_index, iter, InsertType::MATCH, tag, node, std::forward<Predicate>(predicate));
-  // bucket_metas_[bucket_index].lock.unlock(proxy);
   if (!success) {
     destroy(node);
     return {};
@@ -628,7 +624,6 @@ template <typename Predicate>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_key_if(const key_type& key, Predicate&& predicate) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
   iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
-  // auto lock = lock_bucket(bucket_index);
   return erase_slot(iter, key, tag, std::forward<Predicate>(predicate));
 }
 

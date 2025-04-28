@@ -186,6 +186,10 @@ static void init_cache() {
   // g_test_cache = std::make_unique<LRU>();
   if (FLAGS_cache == "concurrent_lru") {
     g_test_cache = std::make_unique<LRU>();
+  } else if (FLAGS_cache == "concurrent_lfu") {
+    g_test_cache = std::make_unique<LFU>();
+  } else if (FLAGS_cache == "concurrent_fifo") {
+    g_test_cache = std::make_unique<FIFO>();
   } else if (FLAGS_cache == "folly_lru") {
     g_test_cache = std::make_unique<FollyLRU>();
   } else if (FLAGS_cache == "concurrent_hashmap") {
@@ -194,6 +198,9 @@ static void init_cache() {
     g_test_cache = std::make_unique<FollyHashMap>();
   } else if (FLAGS_cache == "folly_atomic_hashmap") {
     g_test_cache = std::make_unique<FollyAtomicHashMap>();
+  } else {
+    fmt::print("Invalid cache type:'{}'\n", FLAGS_cache);
+    exit(-1);
   }
 
   if (FLAGS_generator == "uniform") {
@@ -201,6 +208,9 @@ static void init_cache() {
   } else if (FLAGS_generator == "zipfian") {
     g_key_generator =
         std::make_unique<ZipfianGenerator>(FLAGS_cache_size * FLAGS_max_key_multiplier, FLAGS_zipfian_theta);
+  } else {
+    fmt::print("Invalid generator type:'{}'\n", FLAGS_generator);
+    exit(-1);
   }
 
   g_test_cache->Init(FLAGS_cache_size);
