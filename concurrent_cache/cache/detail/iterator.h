@@ -24,6 +24,7 @@
 
 #include "concurrent_cache/cache/detail/node.h"
 #include "folly/synchronization/Hazptr.h"
+#include "node.h"
 
 namespace concurrent_cache {
 
@@ -49,8 +50,14 @@ class Iterator {
     return *this;
   }
 
+  Iterator& operator++(int) {
+    next();
+    return *this;
+  }
+
   bool operator==(const Iterator& o) const {
-    return parent_ == o.parent_ && bucket_idx_ == o.bucket_idx_ && bucket_offset_ == o.bucket_offset_;
+    return root_buckets_ == o.root_buckets_ && root_bucket_idx_ == o.root_bucket_idx_ &&
+           bucket_offset_ == o.bucket_offset_ && bucket_ == o.bucket_;
   }
 
   bool operator!=(const Iterator& o) const { return !(*this == o); }
@@ -61,9 +68,10 @@ class Iterator {
     if (this != &o) {
       hazptr_ = std::move(o.hazptr_);
       node_ = std::exchange(o.node_, nullptr);
-      parent_ = std::exchange(o.parent_, nullptr);
+      root_buckets_ = std::exchange(o.root_buckets_, nullptr);
+      root_bucket_idx_ = std::exchange(o.root_bucket_idx_, kBucketIdxLimit);
+      root_bucket_count_ = std::exchange(o.root_bucket_count_, 0);
       bucket_ = std::exchange(o.bucket_, nullptr);
-      bucket_idx_ = std::exchange(o.bucket_idx_, kBucketIdxLimit);
       bucket_offset_ = std::exchange(o.bucket_offset_, 0);
     }
     return *this;
@@ -74,38 +82,50 @@ class Iterator {
   Iterator(Iterator&& o) noexcept
       : hazptr_(std::move(o.hazptr_)),
         node_(std::exchange(o.node_, nullptr)),
-        parent_(std::exchange(o.parent_, nullptr)),
+        root_buckets_(std::exchange(o.root_buckets_, nullptr)),
+        root_bucket_count_(std::exchange(o.root_bucket_count_, 0)),
+        root_bucket_idx_(std::exchange(o.root_bucket_idx_, kBucketIdxLimit)),
         bucket_(std::exchange(o.bucket_, nullptr)),
-        bucket_idx_(std::exchange(o.bucket_idx_, kBucketIdxLimit)),
         bucket_offset_(std::exchange(o.bucket_offset_, 0)) {}
 
-  Iterator(const Map* parent, bucket_type* bucket, uint32_t bucket_idx, uint32_t bucket_offset)
+  Iterator(const bucket_type* buckets, uint32_t bucket_count, uint32_t bucket_idx, bucket_type* bucket,
+           uint32_t bucket_offset)
       : hazptr_(folly::make_hazard_pointer()),
         node_(nullptr),
-        parent_(parent),
+        root_buckets_(buckets),
+        root_bucket_count_(bucket_count),
+        root_bucket_idx_(bucket_idx),
         bucket_(bucket),
-        bucket_idx_(bucket_idx),
         bucket_offset_(bucket_offset) {}
 
  private:
   using Node = NodeT<key_type, mapped_type, allocator_type>;
   // cbegin iterator
-  explicit Iterator(const Map* parent)
+  explicit Iterator(const bucket_type* buckets, uint32_t bucket_count)
       : hazptr_(folly::make_hazard_pointer()),
         node_(nullptr),
-        parent_(parent),
-        bucket_(nullptr),
-        bucket_idx_(0),
+        root_buckets_(buckets),
+        root_bucket_count_(bucket_count),
+        root_bucket_idx_(0),
+        bucket_(const_cast<bucket_type*>(buckets)),
         bucket_offset_(0) {
-    next();
+    node_ = hazptr_.protect(bucket_->slots[0]);
+    if (!bucket_->valid(0) || !node_) {
+      next();
+    }
   }
 
   // cend iterator
   explicit Iterator()
-      : node_(nullptr), parent_(nullptr), bucket_(nullptr), bucket_idx_(kBucketIdxLimit), bucket_offset_(0) {}
+      : node_(nullptr),
+        root_buckets_(nullptr),
+        root_bucket_count_(0),
+        root_bucket_idx_(0),
+        bucket_(nullptr),
+        bucket_offset_(0) {}
 
   inline bucket_type* get_bucket() { return bucket_; }
-  inline uint32_t get_bucket_idx() const { return bucket_idx_; }
+  inline uint32_t get_bucket_idx() const { return root_bucket_idx_; }
   inline uint32_t get_bucket_offset() const { return bucket_offset_; }
   inline Node* get_node() { return node_; }
 
@@ -120,14 +140,52 @@ class Iterator {
   }
   inline void set_node(Node* node) { node_ = node; }
 
-  void next() {}
+  void next() {
+    while (bucket_ != nullptr) {
+      bucket_offset_++;
+      if (bucket_offset_ >= kBucketSlotSize) {
+        bucket_ = bucket_->get_overflow();
+        bucket_offset_ = 0;
+      }
+      if (!bucket_) {
+        if (!next_bucket()) {
+          return;
+        }
+      }
+      node_ = hazptr_.protect(bucket_->slots[bucket_offset_]);
+      if (bucket_->valid(bucket_offset_) && node_) {
+        return;
+      }
+    }
+  }
+  bool next_bucket() {
+    if (root_buckets_ == nullptr || root_bucket_idx_ >= root_bucket_count_) {
+      return false;
+    }
+    root_bucket_idx_++;
+    if (root_bucket_idx_ >= root_bucket_count_) {
+      root_buckets_ = nullptr;
+      root_bucket_count_ = 0;
+      root_bucket_idx_ = 0;
+      bucket_ = nullptr;
+      bucket_offset_ = 0;
+      return false;
+    }
+
+    bucket_ = const_cast<bucket_type*>(root_buckets_ + root_bucket_idx_);
+    bucket_offset_ = 0;
+    return true;
+  }
 
   folly::hazptr_holder<std::atomic> hazptr_;
   // folly::hazptr_array<2, std::atomic> hazptrs_;
   Node* node_;
-  const Map* parent_;
+  // const Map* parent_;
+  const bucket_type* root_buckets_ = nullptr;
+  uint32_t root_bucket_count_;
+  uint32_t root_bucket_idx_;
+
   bucket_type* bucket_ = nullptr;
-  uint32_t bucket_idx_;
   uint32_t bucket_offset_;
 };
 }  // namespace detail

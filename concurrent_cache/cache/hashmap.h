@@ -21,7 +21,6 @@
 #include <memory>
 #include <optional>
 #include <utility>
-#include "folly/synchronization/DistributedMutex.h"
 
 namespace concurrent_cache {
 

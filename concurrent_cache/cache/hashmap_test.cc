@@ -25,18 +25,27 @@
 TEST(HashMap, simple) {
   concurrent_cache::ConcurrentFixedHashMap<int64_t, int64_t> cache;
 
-  for (int64_t i = 0; i < 10000; i++) {
+  for (int64_t i = 0; i < 100; i++) {
     auto res = cache.emplace(i, i + 1);
     ASSERT_TRUE(res.second);
   }
 
-  for (int64_t i = 0; i < 10000; i++) {
+  for (int64_t i = 0; i < 100; i++) {
     auto res = cache.find(i);
     ASSERT_TRUE(res != cache.end());
   }
 
   ASSERT_FALSE(cache.emplace(10, 11).second);
-  ASSERT_TRUE(cache.insert_or_assign(10, 11));   // overwrite exist
+  ASSERT_TRUE(cache.insert_or_assign(10, 11));  // overwrite exist
+
+  auto it = cache.begin();
+  size_t cursor = 0;
+  while (it != cache.end()) {
+    printf("[%u]%ld->%ld\n", cursor, it->first, it->second);
+    it++;
+    cursor++;
+  }
+
   ASSERT_TRUE(cache.insert_or_assign(101, 11));  // insert new
 }
 

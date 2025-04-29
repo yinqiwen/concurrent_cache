@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "folly/ThreadCachedInt.h"
+#include "folly/synchronization/DistributedMutex.h"
 #include "folly/synchronization/Hazptr.h"
 
 #include "concurrent_cache/cache/detail/iterator.h"
@@ -186,7 +187,7 @@ std::pair<uint32_t, uint8_t> ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::
   hash ^= hash >> 23;
   uint8_t tag = hash & bucket_type::kTagMask;
   if (tag >= bucket_type::kEmptyCtrl) {
-    tag -= 3;
+    tag -= bucket_type::kCtrlNum;
   }
   uint32_t bucket_index = static_cast<uint32_t>((hash >> bucket_type::kTagMaskBits) % bucket_count_);
   return {bucket_index, tag};
@@ -352,7 +353,7 @@ template <class K, class V, class Hash, class Eq, class Alloc>
 typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_iterator
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::find(const K& key) const {
   auto [bucket_index, tag] = get_idx_and_tag(key);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   if (find_slot(iter, key, tag)) {
     return iter;
   } else {
@@ -363,7 +364,7 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::find(const K& key) const {
 template <class K, class V, class Hash, class Eq, class Alloc>
 typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_iterator
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::begin() const noexcept {
-  return iterator(this, buckets_, 0);
+  return iterator(buckets_, bucket_count_);
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc>
@@ -375,7 +376,7 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::end() const noexcept {
 template <class K, class V, class Hash, class Eq, class Alloc>
 typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_iterator
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::cbegin() const noexcept {
-  return iterator(this, buckets_, 0);
+  return iterator(buckets_, bucket_count_);
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc>
@@ -387,7 +388,7 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::cend() const noexcept {
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::erase(const key_type& key) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   return erase_slot(iter, key, tag, [](const value_type&) { return true; });
 }
 
@@ -397,7 +398,7 @@ std::pair<typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_iter
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::emplace(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   auto lock = lock_bucket(bucket_index);
   auto success = do_insert(&lock, iter, InsertType::DOES_NOT_EXIST, tag, node, [](const V&) { return false; });
 
@@ -412,7 +413,7 @@ template <typename... Args>
 bool ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::insert_or_assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
 
   auto lock = lock_bucket(bucket_index);
   auto success = do_insert(&lock, iter, InsertType::ANY, tag, node, [](const V&) { return false; });
@@ -429,7 +430,7 @@ std::optional<typename ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::const_
 ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   auto lock = lock_bucket(bucket_index);
   auto success = do_insert(&lock, iter, InsertType::MUST_EXIST, tag, node, [](const V&) { return false; });
 
@@ -447,7 +448,7 @@ ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::assign_if(Key&& k, Value&& de
   auto* node = create<node_type>(cohort(), std::move(k), std::move(desired));
   auto [bucket_index, tag] = get_idx_and_tag(node->getItem().first);
 
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   auto lock = lock_bucket(bucket_index);
   auto success = do_insert(&lock, iter, InsertType::MATCH, tag, node, std::forward<Predicate>(predicate));
 
@@ -461,7 +462,7 @@ template <class K, class V, class Hash, class Eq, class Alloc>
 template <typename Predicate>
 size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::erase_key_if(const key_type& key, Predicate&& predicate) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
-  iterator iter(this, buckets_ + bucket_index, bucket_index, 0);
+  iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
   return erase_slot(iter, key, tag, std::forward<Predicate>(predicate));
 }
 

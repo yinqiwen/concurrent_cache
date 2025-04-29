@@ -189,12 +189,14 @@ struct Bucket {
   static constexpr size_t kTagMask = 0xFF;
   static constexpr size_t kTagMaskBits = 8;
 
-  static constexpr uint8_t kErasedCtrl = static_cast<uint8_t>(255);
-  static constexpr uint8_t kBusyCtrl = static_cast<uint8_t>(254);
-  static constexpr uint8_t kEmptyCtrl = static_cast<uint8_t>(253);
+  // static constexpr uint8_t kErasedCtrl = static_cast<uint8_t>(255);
+  static constexpr uint8_t kBusyCtrl = static_cast<uint8_t>(255);
+  static constexpr uint8_t kEmptyCtrl = static_cast<uint8_t>(254);
+  static constexpr uint8_t kCtrlNum = static_cast<uint8_t>(2);
   using Node = NodeT<KeyType, ValueType, Allocator, Atom>;
   // using Slot = folly::hazptr_root<Node, Atom>;
   using Slot = Atom<Node*>;
+  using Self = Bucket<KeyType, ValueType, Allocator, Atom>;
 
   Atom<uint8_t> tags[kBucketSlotSize];
   Slot slots[kBucketSlotSize];
@@ -207,11 +209,20 @@ struct Bucket {
     }
   }
 
+  Self* get_overflow() { return overflow.load(); }
+
   inline bool valid(uint32_t offset) const {
     if (offset >= kBucketSlotSize) {
       return false;
     }
     return tags[offset].load() < kEmptyCtrl;
+  }
+
+  inline Node* get_slot(size_t offset) {
+    if (!valid(offset)) {
+      return nullptr;
+    }
+    return slots[offset].load();
   }
 
   inline bool acquire_empty(size_t offset) {
@@ -278,7 +289,6 @@ struct Bucket {
     }
     return false;
   }
-  inline Node* get_slot(size_t i) { return slots[i].load(); }
 
   inline bool replace_slot(size_t i, Node* current, Node* new_node) {
     if (slots[i].compare_exchange_strong(current, new_node)) {
@@ -523,7 +533,7 @@ struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
 
   std::tuple<Self*, uint32_t, typename Parent::Node*, uint8_t> find_victim(const CacheOptions& opts) {
     uint32_t now = get_timestamp(opts.time_scale);
-    uint8_t result_counters[kBucketSlotSize];
+    // uint8_t result_counters[kBucketSlotSize];
 
     Self* evict_bucket = nullptr;
     Self* eval_bucket = this;
