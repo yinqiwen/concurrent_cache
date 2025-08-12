@@ -60,6 +60,8 @@ TEST(LFUCache, simple) {
   opts.max_size = 1000;
   concurrent_cache::LFUCache<int64_t, int64_t> cache(opts);
 
+  ASSERT_GT(cache.capacity(), 0);
+
   for (int64_t i = 0; i < 1000; i++) {
     auto res = cache.insert(i, i + 1);
     ASSERT_TRUE(res.second);

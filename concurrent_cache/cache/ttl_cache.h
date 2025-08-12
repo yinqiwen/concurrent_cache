@@ -38,7 +38,7 @@ class TTLCache {
   explicit TTLCache(const CacheOptions& options = {});
 
   size_t size() const noexcept;
-  size_t capcity() const noexcept;
+  size_t capacity() const noexcept;
   size_t bucket_count() const noexcept;
   bool empty() const noexcept;
   const_iterator find(const KeyType& k);
@@ -179,8 +179,8 @@ size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::size() const noexcept {
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename, template <typename> class> class CacheBucket>
-size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::capcity() const noexcept {
-  return impl_->capcity();
+size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::capacity() const noexcept {
+  return impl_->capacity();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
           template <typename, typename, typename, template <typename> class> class CacheBucket>

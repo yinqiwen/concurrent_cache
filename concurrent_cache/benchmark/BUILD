@@ -29,7 +29,7 @@ cc_binary(
         "-liberty",
     ],
     linkstatic = True,
-    malloc = "@com_github_jemalloc//:jemalloc",
+    # malloc = "@com_github_jemalloc//:jemalloc",
     deps = [
         ":benchmark_libs",
     ],

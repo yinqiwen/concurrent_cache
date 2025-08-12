@@ -47,7 +47,7 @@ class ConcurrentFixedHashMap {
   ~ConcurrentFixedHashMap();
 
   size_t size() const noexcept;
-  size_t capcity() const noexcept;
+  size_t capacity() const noexcept;
   size_t bucket_count() const noexcept;
   bool empty() const noexcept;
   const_iterator find(const KeyType& k) const;

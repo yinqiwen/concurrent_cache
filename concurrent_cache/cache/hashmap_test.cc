@@ -51,7 +51,7 @@ TEST(HashMap, simple) {
 
 TEST(HashMap, destory) {
   concurrent_cache::ConcurrentFixedHashMap<int64_t, int64_t> cache;
-
+  ASSERT_GT(cache.capacity(), 0);
   for (int64_t i = 0; i < 10; i++) {
     auto res = cache.emplace(i, i + 1);
     ASSERT_TRUE(res.second);

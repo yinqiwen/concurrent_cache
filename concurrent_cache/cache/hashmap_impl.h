@@ -564,8 +564,8 @@ size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::size() const noexcept {
   return impl_->size();
 }
 template <class K, class V, class Hash, class Eq, class Alloc>
-size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::capcity() const noexcept {
-  return impl_->capcity();
+size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::capacity() const noexcept {
+  return impl_->capacity();
 }
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMap<K, V, Hash, Eq, Alloc>::bucket_count() const noexcept {
