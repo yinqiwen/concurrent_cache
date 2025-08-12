@@ -82,7 +82,7 @@ class ValueHolder<KeyType, ValueType, Allocator, Atom,
 
     value_type& getItem() { return kv_; }
 
-    void acquireLink() { uint32_t count = numlinks_.fetch_add(1, std::memory_order_release); }
+    void acquireLink() { numlinks_.fetch_add(1, std::memory_order_release); }
 
     bool releaseLink() {
       uint32_t count = numlinks_.load(std::memory_order_acquire);
@@ -532,7 +532,7 @@ struct LFUBucket : public Bucket<KeyType, ValueType, Allocator, Atom> {
   Self* get_overflow() { return reinterpret_cast<Self*>(Parent::overflow.load()); }
 
   std::tuple<Self*, uint32_t, typename Parent::Node*, uint8_t> find_victim(const CacheOptions& opts) {
-    uint32_t now = get_timestamp(opts.time_scale);
+    // uint32_t now = get_timestamp(opts.time_scale);
     // uint8_t result_counters[kBucketSlotSize];
 
     Self* evict_bucket = nullptr;

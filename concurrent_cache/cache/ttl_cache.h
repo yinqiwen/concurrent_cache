@@ -21,7 +21,7 @@
 namespace concurrent_cache {
 
 template <class KeyType, class ValueType, class HashFn, class KeyEqual, typename Allocator,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 class TTLCache {
  public:
   typedef KeyType key_type;
@@ -81,28 +81,28 @@ class TTLCache {
 };
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::TTLCache(const CacheOptions& options) {
   impl_ = new detail::CacheImpl<K, ttl_value_type, Hash, Eq, Alloc, CacheBucket>(options);
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::~TTLCache() {
   delete impl_;
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::find(const K& k) {
   return impl_->filter_find(k, [](const auto& v) { return v.pttl() > 0; });
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::erase(const K& k) {
   return impl_->erase(k);
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename DURATION>
 std::pair<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Key&& k, Value&& v, DURATION ttl) {
@@ -110,7 +110,7 @@ TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Key&& k, Value&& v, DURATI
   return impl_->emplace(std::move(k), std::move(ttl_val));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename DURATION>
 std::pair<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert(Key&& k, Value&& v, DURATION ttl) {
@@ -118,14 +118,14 @@ TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert(Key&& k, Value&& v, DURATIO
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename DURATION>
 bool TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Key&& k, Value&& v, DURATION ttl) {
   auto ttl_val = make_ttl_value<V, Value, DURATION>(std::move(v), ttl);
   return impl_->insert_or_assign(std::forward<Key>(k), std::move(ttl_val));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename DURATION>
 std::optional<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Key&& k, Value&& v, DURATION ttl) {
@@ -133,7 +133,7 @@ TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Key&& k, Value&& v, DURATIO
   return impl_->assign(std::forward<Key>(k), std::move(ttl_val));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename Predicate, typename DURATION>
 std::optional<typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired, DURATION ttl, Predicate&& predicate) {
@@ -141,54 +141,54 @@ TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired
   return impl_->assign_if(std::move(k), std::move(ttl_val), std::forward<Predicate>(predicate));
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Predicate>
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::erase_key_if(const key_type& k, Predicate&& predicate) {
   return impl_->erase_key_if(k, std::forward<Predicate>(predicate));
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::begin() const noexcept {
   return impl_->begin();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::end() const noexcept {
   return impl_->end();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::cbegin() const noexcept {
   return impl_->cbegin();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::cend() const noexcept {
   return impl_->cend();
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::size() const noexcept {
   return impl_->size();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::capcity() const noexcept {
   return impl_->capcity();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::bucket_count() const noexcept {
   return impl_->bucket_count();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 std::string TTLCache<K, V, Hash, Eq, Alloc, CacheBucket>::stats() const {
   return impl_->stats();
 }

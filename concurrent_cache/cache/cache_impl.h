@@ -43,7 +43,7 @@
 namespace concurrent_cache {
 namespace detail {
 template <typename KeyType, typename ValueType, typename HashFn, typename KeyEqual, typename Allocator,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 class CacheImpl {
  public:
   typedef KeyType key_type;
@@ -54,7 +54,7 @@ class CacheImpl {
   typedef KeyEqual key_equal;
   using allocator_type = Allocator;
   // using bucket_type = LRUBucket<KeyType, ValueType, Allocator>;
-  using bucket_type = CacheBucket<KeyType, ValueType, Allocator>;
+  using bucket_type = CacheBucket<KeyType, ValueType, Allocator, std::atomic>;
   using Self = CacheImpl<KeyType, ValueType, HashFn, KeyEqual, Allocator, CacheBucket>;
   using iterator = Iterator<Self>;
   using const_iterator = Iterator<Self>;
@@ -177,7 +177,7 @@ class CacheImpl {
 };
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::CacheImpl(const CacheOptions& options) : opts_(options) {
   size_t init_size = opts_.max_size;
   if (init_size == 0) {
@@ -215,7 +215,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::CacheImpl(const CacheOptions& opt
   enable_estimate_timestamp_updater();
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::~CacheImpl() {
   for (size_t i = 0; i < bucket_count_; i++) {
     buckets_[i].~bucket_type();
@@ -225,7 +225,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::~CacheImpl() {
   Alloc().deallocate((uint8_t*)bucket_metas_, sizeof(BucketMeta) * bucket_count_);
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 std::string CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::stats() const {
   std::string info;
   info.append("node_counter:").append(std::to_string(get_alive_node_counter())).append(",");
@@ -236,7 +236,7 @@ std::string CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::stats() const {
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 std::pair<uint32_t, uint8_t> CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::get_idx_and_tag(const key_type& key) const {
   auto hash = hasher()(key);
   hash ^= hash >> 32;
@@ -250,7 +250,7 @@ std::pair<uint32_t, uint8_t> CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::get_
   return {bucket_index, tag};
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::acquire_empty_slot(iterator& iter, uint8_t tag,
                                                                        node_type* new_node) {
   auto* bucket = iter.get_bucket();
@@ -288,7 +288,7 @@ bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::acquire_empty_slot(iterator&
   }
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename MatchFunc>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_slot(iterator& iter, const key_type& key, uint8_t tag,
                                                                  MatchFunc match) {
@@ -327,7 +327,7 @@ size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_slot(iterator& iter,
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find_slot(iterator& iter, const K& key, uint8_t tag) const {
   auto* bucket = iter.get_bucket();
   auto& hazcurr = iter.hazptr_;
@@ -355,7 +355,7 @@ bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find_slot(iterator& iter, co
   }
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Filter>
 bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find_slot(iterator& iter, const key_type& key, uint8_t tag,
                                                                      Filter&& filter) {
@@ -392,7 +392,7 @@ bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find_slot(iterator& i
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename MatchFunc>
 bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::do_insert(uint32_t bucket_idx, iterator& iter, InsertType type,
                                                               uint8_t tag, node_type* node, MatchFunc match) {
@@ -458,7 +458,7 @@ bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::do_insert(uint32_t bucket_id
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 void CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::try_evict(size_t bucket_idx) {
   auto& bucket_meta = bucket_metas_[bucket_idx];
   auto* bucket = buckets_ + bucket_idx;
@@ -485,7 +485,7 @@ void CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::try_evict(size_t bucket_idx)
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find(const K& key) const {
   auto [bucket_index, tag] = get_idx_and_tag(key);
@@ -499,7 +499,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::find(const K& key) const {
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Filter>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find(const K& key, Filter&& filter) {
@@ -514,35 +514,35 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::filter_find(const K& key, Filter&
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::begin() const noexcept {
   return iterator(buckets_, bucket_count_);
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::end() const noexcept {
   return iterator();
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::cbegin() const noexcept {
   return iterator(buckets_, bucket_count_);
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::cend() const noexcept {
   return iterator();
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase(const key_type& key) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
   iterator iter(buckets_, bucket_count_, bucket_index, buckets_ + bucket_index, 0);
@@ -551,7 +551,7 @@ size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase(const key_type& key)
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename... Args>
 std::pair<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator, bool>
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Args&&... args) {
@@ -569,7 +569,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::emplace(Args&&... args) {
   return {std::move(iter), true};
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename... Args>
 bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Args&&... args) {
   auto* node = create<node_type>(cohort(), std::forward<Args>(args)...);
@@ -587,7 +587,7 @@ bool CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::insert_or_assign(Args&&... a
   return true;
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename... Args>
 std::optional<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Args&&... args) {
@@ -603,7 +603,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign(Args&&... args) {
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Key, typename Value, typename Predicate>
 std::optional<typename CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::const_iterator>
 CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desired, Predicate&& predicate) {
@@ -618,7 +618,7 @@ CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::assign_if(Key&& k, Value&& desire
   return iter;
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 template <typename Predicate>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_key_if(const key_type& key, Predicate&& predicate) {
   auto [bucket_index, tag] = get_idx_and_tag(key);
@@ -627,20 +627,20 @@ size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::erase_key_if(const key_typ
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::bucket_count() const {
   return bucket_count_;
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::size() const {
-  return reinterpret_cast<size_t>(size_.readFull());
+  return static_cast<size_t>(size_.readFull());
 }
 template <class K, class V, class Hash, class Eq, class Alloc,
-          template <typename, typename, typename> class CacheBucket>
+          template <typename, typename, typename, template <typename> class> class CacheBucket>
 size_t CacheImpl<K, V, Hash, Eq, Alloc, CacheBucket>::capacity() const {
-  return reinterpret_cast<size_t>(capacity_.readFull());
+  return static_cast<size_t>(capacity_.readFull());
 }
 
 }  // namespace detail

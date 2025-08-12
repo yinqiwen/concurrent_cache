@@ -473,11 +473,11 @@ size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::bucket_count() const {
 
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::size() const {
-  return reinterpret_cast<size_t>(size_.readFull());
+  return static_cast<size_t>(size_.readFull());
 }
 template <class K, class V, class Hash, class Eq, class Alloc>
 size_t ConcurrentFixedHashMapImpl<K, V, Hash, Eq, Alloc>::capacity() const {
-  return reinterpret_cast<size_t>(capacity_.readFull());
+  return static_cast<size_t>(capacity_.readFull());
 }
 
 template <class K, class V, class Hash, class Eq, class Alloc>
