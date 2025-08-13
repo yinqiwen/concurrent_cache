@@ -122,7 +122,7 @@ HWY_INLINE std::pair<T, uint16_t> simd_vector_min_impl(const T* data, size_t len
   }
   if (HWY_UNLIKELY(idx == len)) return {min_val, 0};
   const size_t remaining = len - idx;
-  HWY_DASSERT(0 != remaining && remaining < N);
+  HWY_DASSERT(0 != remaining && remaining < lanes);
   const hn::Vec<D> v = hn::LoadN(d, data + idx, remaining);
   auto mask = hn::Eq(v, cmp);
   auto found = hn::FindFirstTrue(d, mask);
