@@ -304,7 +304,16 @@ struct Bucket {
   }
 
   ~Bucket() {
-    unlink_and_reclaim_nodes();
+    // unlink_and_reclaim_nodes();
+    HazptrDeleter<Allocator> node_deleter;
+    for (size_t i = 0; i < kBucketSlotSize; i++) {
+      Node* to_erase = nullptr;
+      if (slots[i].compare_exchange_strong(to_erase, nullptr)) {
+        if (to_erase != nullptr) {
+          node_deleter(to_erase);
+        }
+      }
+    }
     if (overflow) {
       delete overflow.load();
     }

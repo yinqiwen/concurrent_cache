@@ -186,6 +186,8 @@ static void init_cache() {
   // g_test_cache = std::make_unique<LRU>();
   if (FLAGS_cache == "concurrent_lru") {
     g_test_cache = std::make_unique<LRU>();
+  } else if (FLAGS_cache == "concurrent_lru_ttl") {
+    g_test_cache = std::make_unique<LRUTTL>();
   } else if (FLAGS_cache == "concurrent_lfu") {
     g_test_cache = std::make_unique<LFU>();
   } else if (FLAGS_cache == "concurrent_fifo") {
@@ -354,6 +356,7 @@ static void start_test() {
     bench.AddStage("read_write_cache", read_write_cache, read_write_cache_log, FLAGS_threads, FLAGS_N);
   }
   bench.Run();
+  g_test_cache.reset();
 }
 }  // namespace benchmark
 }  // namespace concurrent_cache

@@ -24,6 +24,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "concurrent_cache/cache/cache.h"
 #include "concurrent_cache/cache/hashmap.h"
+#include "concurrent_cache/cache/ttl_cache.h"
 #include "folly/AtomicHashMap.h"
 #include "folly/concurrency/ConcurrentHashMap.h"
 #include "folly/container/EvictingCacheMap.h"
@@ -126,6 +127,26 @@ class LRU : public TestCache {
   std::string GetStats() { return cache_->stats(); }
 
   std::unique_ptr<concurrent_cache::LRUCache<uint64_t, std::string>> cache_;
+};
+
+class LRUTTL : public TestCache {
+ private:
+  int Init(size_t cache_size) {
+    concurrent_cache::CacheOptions opts;
+    opts.max_size = cache_size;
+    cache_ = std::make_unique<concurrent_cache::LRUTTLCache<uint64_t, std::string>>(opts);
+    return 0;
+  }
+  bool Put(uint64_t key, std::string&& val) {
+    return cache_->insert_or_assign(key, std::move(val), std::chrono::seconds(100000));
+  }
+  bool Get(uint64_t key, std::function<void(const std::string&)>&& value_cb) {
+    auto found = cache_->find(key);
+    return found != cache_->end();
+  }
+  std::string GetStats() { return cache_->stats(); }
+
+  std::unique_ptr<concurrent_cache::LRUTTLCache<uint64_t, std::string>> cache_;
 };
 
 class LFU : public TestCache {
